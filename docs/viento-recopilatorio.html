@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viento — Recopilatorio del milestone · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Viento — Recopilatorio del milestone</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="viento-74-comando-wind-y-fase-aplicarviento.html">Viento — 74 — Comando WIND y fase aplicarViento</a> · <a href="viento-75-endpoint-api.html">Viento — 75 — Endpoint API</a> · <a href="viento-76-e2e-y-validacion-narrativa.html">Viento — 76 — E2E y validación narrativa</a> · <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>3 issues, 3 PRs (a falta de mergear), todas cerradas en una sola
+  rama</strong> (<code>viento</code>).</li>
+<li><strong>Hipótesis física verificada</strong>: viento (10, 0) desplaza el centroide
+  +17.4 celdas en X mundo; viento (0, 10) lo desplaza +11.3 en Z mundo.
+  El test crítico de la convención <code>.y → Z mundo</code> pasa end-to-end.</li>
+<li><strong>Convención de ejes documentada y blindada</strong> en <code>docs/convenciones-ejes.md</code>
+  (paso 0 del milestone, hecho en sesión previa). El swap interno del
+  motor sucede sólo en <code>Simulacion::set_viento</code>; el resto del sistema
+  (API, Godot, tests E2E) habla en coordenadas del mundo.</li>
+<li><strong>El solver no cambió</strong> — sólo se añadió la fase <code>aplicarViento</code> antes
+  de buoyancy. La instrumentación del profile mantiene visibilidad del
+  coste (esperado ~1 % del tick, como buoyancy).</li>
+</ul>
+<h2 id="las-3-issues-del-milestone">Las 3 issues del milestone</h2>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Capa</th>
+<th>Aporte</th>
+<th style="text-align: right;">Tests añadidos</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="viento-74-comando-wind-y-fase-aplicarviento.html">#74</a></td>
+<td>motor C++</td>
+<td><code>Vec3 viento_motor_</code>, <code>set_viento</code>, <code>aplicarViento</code>, fase en <code>tick()</code>, <code>profile_.viento</code>, comando <code>WIND</code></td>
+<td style="text-align: right;">+3 protocolo, +19 unit</td>
+</tr>
+<tr>
+<td><a href="viento-75-endpoint-api.html">#75</a></td>
+<td>API HTTP</td>
+<td><code>POST /viento</code>, wrapper <code>motor.set_viento</code>, validación pydantic</td>
+<td style="text-align: right;">+3 wrapper, +6 endpoint</td>
+</tr>
+<tr>
+<td><a href="viento-76-e2e-y-validacion-narrativa.html">#76</a></td>
+<td>E2E + narrativa</td>
+<td>Tests E2E (incluido test crítico de la convención) + script <code>viento_validacion.py</code></td>
+<td style="text-align: right;">+3 E2E</td>
+</tr>
+</tbody>
+</table>
+<h2 id="hipotesis-fisica-que-se-demuestra">Hipótesis física que se demuestra</h2>
+<blockquote>
+<p><em>El campo de viento desplaza el frente del incendio en la dirección
+del viento. La magnitud del desplazamiento es proporcional a la
+magnitud del viento y al tiempo.</em></p>
+</blockquote>
+<h3 id="por-que-sale-casi-gratis-del-solver">Por qué sale (casi) gratis del solver</h3>
+<p><code>aplicarViento</code> sólo añade una aceleración horizontal al campo de
+velocidades en celdas gaseosas. El resto del solver (presión proyecta
+a incompresible, advección transporta los campos, buoyancy mantiene
+la verticalidad) hace que esa aceleración se traduzca en un
+desplazamiento horizontal del humo y, por reacción/convección, del
+frente de BURNING.</p>
+<p>No se ha tocado advección ni presión. La feature aprovecha el solver
+existente como las cortafuegos.</p>
+<h2 id="la-trampa-de-los-ejes-resuelta">La trampa de los ejes (resuelta)</h2>
+<p>Documentado a fondo en <code>docs/convenciones-ejes.md</code>. Resumen:</p>
+<table>
+<thead>
+<tr>
+<th>Significado</th>
+<th>Vec3 motor</th>
+<th>API JSON</th>
+<th>Godot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vertical</td>
+<td><code>velocity.z</code></td>
+<td><code>cell.y</code></td>
+<td><code>Y</code></td>
+</tr>
+<tr>
+<td>Horizontal X mundo</td>
+<td><code>velocity.x</code></td>
+<td><code>cell.x</code></td>
+<td><code>X</code></td>
+</tr>
+<tr>
+<td>Horizontal Z mundo</td>
+<td><code>velocity.y</code> (¡!)</td>
+<td><code>cell.z</code></td>
+<td><code>Z</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>El swap se hace una sola vez</strong> en <code>Simulacion::set_viento</code>:</p>
+<pre><code class="language-cpp">void set_viento(float vx_mundo, float vz_mundo) {
+    viento_motor_.x = vx_mundo;
+    viento_motor_.y = vz_mundo;   // ← Z mundo va al componente .y
+    viento_motor_.z = 0.0f;       // vertical: no aplica
+}
+</code></pre>
+<p>A partir de ahí, <code>aplicarViento</code> puede sumar componente a componente
+sin condicionales, la API expone sólo nombres del mundo, y Godot no
+necesita saber nada de la convención interna.</p>
+<p><strong>Validado end-to-end</strong>: el test <code>test_e2e_viento_Z_desplaza_centroide_en_cell_z</code>
+falla en bloque si alguien rompe el swap.</p>
+<h2 id="datos-del-bench-narrativo">Datos del bench narrativo</h2>
+<p><code>python3 api/viento_validacion.py --ticks 30 --magnitud 10</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">n BURNING</th>
+<th style="text-align: right;">centroide_x</th>
+<th style="text-align: right;">centroide_z</th>
+<th style="text-align: right;">Δcx</th>
+<th style="text-align: right;">Δcz</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sin viento (baseline)</td>
+<td style="text-align: right;">4 874</td>
+<td style="text-align: right;">260.87</td>
+<td style="text-align: right;">266.26</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>Viento (+10, 0) X mundo</td>
+<td style="text-align: right;">5 300</td>
+<td style="text-align: right;">278.29</td>
+<td style="text-align: right;">269.83</td>
+<td style="text-align: right;"><strong>+17.4</strong></td>
+<td style="text-align: right;">+3.6</td>
+</tr>
+<tr>
+<td>Viento (0, +10) Z mundo</td>
+<td style="text-align: right;">4 542</td>
+<td style="text-align: right;">262.70</td>
+<td style="text-align: right;">277.55</td>
+<td style="text-align: right;">+1.8</td>
+<td style="text-align: right;"><strong>+11.3</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Lectura para gestores forestales:</p>
+<ul>
+<li><strong>10 m/s durante 30 ticks (5 minutos simulados) ⇒ 17 m de
+  desplazamiento del centro del frente</strong>.</li>
+<li>La asimetría del desplazamiento X vs Z (17 vs 11) es por la
+  asimetría de fondo del solver, no del viento — el viento mismo es
+  isótropo.</li>
+<li>El frente con viento NO sólo se desplaza; también cambia su forma
+  (n BURNING crece a +X y baja a +Z respecto al baseline). Es una
+  observación cualitativa para una iteración futura.</li>
+</ul>
+<h2 id="decisiones-cerradas-durante-el-milestone">Decisiones cerradas durante el milestone</h2>
+<ol>
+<li><strong>Documentar la convención de ejes antes de tocar código</strong> (paso 0,
+   sesión previa). Producido <code>docs/convenciones-ejes.md</code> con tabla
+   de tres componentes (motor/API/Godot), verificación empírica de
+   cada uno, y el plan de implementación corregido para usar
+   <code>velocity.x</code>/<code>velocity.y</code> (NO <code>velocity.z</code>).</li>
+<li><strong>El swap sucede UNA sola vez</strong> en <code>Simulacion::set_viento</code>. El
+   resto del motor (y la API entera, y Godot) habla en coordenadas
+   del mundo.</li>
+<li><strong>Sólo gases, no FUEL</strong> en <code>aplicarViento</code>. El viento no se aplica
+   a combustible sólido.</li>
+<li><strong><code>velocity.z</code> (vertical) NUNCA se toca</strong> desde viento. Es exclusiva
+   de <code>aplicarBuoyancy</code>.</li>
+<li><strong>Fase <code>aplicarViento</code> ANTES de buoyancy</strong>, dentro del bucle
+   paralelo por cuadrante. Razón: la presión debe proyectar el campo
+   resultante a incompresible incluyendo el empuje del viento.</li>
+<li><strong>API sin rango duro en <code>vx</code>/<code>vz</code></strong>. El usuario decide la magnitud;
+   los valores absurdos los delata el bbox del frente.</li>
+<li><strong>DELETE/undo NO existe</strong>. Cambiar el viento es simplemente otro
+   <code>POST /viento</code>. <code>/reset</code> también lo limpia (gracias a la línea
+   <code>viento_motor_ = Vec3{}</code> en <code>reset()</code>).</li>
+<li><strong>Métrica narrativa: centroide del bbox</strong>, no conteo en una región
+   fija como en cortafuegos. La feature aquí es desplazamiento, no
+   contención.</li>
+<li><strong>Tests asimétricos en umbrales</strong> (5 para X, 3 para Z). Refleja la
+   asimetría base del solver, no es un sesgo del test.</li>
+</ol>
+<h2 id="cambios-en-el-repo">Cambios en el repo</h2>
+<h3 id="codigo-commiteado-en-viento">Código (commiteado en <code>viento</code>)</h3>
+<pre><code>engine/
+  viento.h              aplicarViento (NUEVO)
+  simulacion.h          Vec3 viento_motor_, set_viento,
+                        fase en tick(), profile_.viento, reset()
+  main.cpp              handler WIND, STATS añade viento=
+  test_main.sh          +3 asserts del protocolo
+  test_simulacion.cpp   +6 funciones de test, +19 asserts
+
+api/
+  main.py               POST /viento, modelo Viento
+  motor.py              set_viento wrapper, _CAMPOS_STATS añade viento
+  test_endpoints.py     +6 tests HTTP
+  test_motor.py         +3 tests wrapper
+  test_e2e.py           +3 tests E2E (incluido test crítico convención)
+  viento_validacion.py  bench narrativo standalone (NUEVO)
+</code></pre>
+<h3 id="documentacion">Documentación</h3>
+<pre><code>docs/
+  convenciones-ejes.md           Tabla motor/API/Godot (NUEVO, sesión previa)
+docs/docs-tfg/mvps/
+  Viento — #74 — Comando WIND y fase aplicarViento.md
+  Viento — #75 — Endpoint API.md
+  Viento — #76 — E2E y validación narrativa.md
+  Viento — Recopilatorio.md      ← este documento
+</code></pre>
+<p>Todo en docs/ está gitignored (vault local), igual que en
+cortafuegos.</p>
+<h2 id="resumen-de-tests-al-cierre">Resumen de tests al cierre</h2>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Inicio del milestone</th>
+<th style="text-align: right;">Cierre del milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">31 OK</td>
+<td style="text-align: right;"><strong>35 OK</strong> (+4)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">74 OK</td>
+<td style="text-align: right;"><strong>93 OK</strong> (+19)</td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">65 OK</td>
+<td style="text-align: right;"><strong>77 OK</strong> (+12)</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong>170 OK</strong></td>
+<td style="text-align: right;"><strong>205 OK</strong> (+35)</td>
+</tr>
+</tbody>
+</table>
+<p>35 asserts nuevos. Cero regresiones en los previos. Snapshot
+determinista (calibrado a iters_jacobi=30 sin viento) sigue pasando
+sin re-snapshotar.</p>
+<h2 id="trabajo-futuro-no-es-de-este-milestone">Trabajo futuro (no es de este milestone)</h2>
+<ol>
+<li><strong>Interacción cortafuegos × viento</strong>. Demostrar que una franja
+   <em>perpendicular al viento</em> contiene; <em>paralela al viento</em> es
+   sobrevolada. Sinergia narrativa fuerte para el TFG.</li>
+<li><strong>Viento variable en el espacio</strong>: usar <code>Cuadrante::pendiente_media</code>
+   y <code>pendiente_dir</code> (ya cargados de <code>world.dat</code>, ningún solver los
+   usa todavía) para canalizar el viento por valles y subir laderas.</li>
+<li><strong>Viento variable en el tiempo</strong>: rachas, calmas. El endpoint
+   recibiría una serie temporal o un perfil.</li>
+<li><strong>HUD de viento en Godot</strong>: flecha en pantalla mostrando dirección
+   y magnitud. Requiere endpoint <code>GET /viento</code> que aún no existe.</li>
+<li><strong>Optimización si hace falta</strong>: la fase <code>aplicarViento</code> recorre
+   todas las celdas siempre, incluso con <code>viento_motor_ = 0</code>. Si
+   alguna vez se mide y el overhead es no despreciable, añadir un
+   <code>if (viento.x == 0 &amp;&amp; viento.y == 0) return;</code> al inicio.</li>
+</ol>
+<h2 id="conclusion">Conclusión</h2>
+<p>El milestone se cierra con la mecánica funcionando, validada
+empíricamente, documentada, y con la convención de ejes blindada
+contra futuras regresiones por el test crítico end-to-end.</p>
+<p>La hipótesis "el viento desplaza el frente" tiene un número concreto:
+<strong>17 m de desplazamiento del centro del incendio con 10 m/s durante 5
+minutos simulados</strong>.</p>
+<p>Próximo paso natural: PR <code>viento → main</code> para mergear los 3 commits y
+cerrar las issues #74, #75, #76 + milestone #12.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Validez de la teoría tras los cortafuegos: ancho y orientación · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Resultados</p>
+    <h1>Validez de la teoría tras los cortafuegos: ancho y orientación</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="contencion-del-cortafuegos-enfriamiento-m2.html">Contención del cortafuegos — enfriamiento (M2)</a> · <a href="terraformado-de-cortafuegos-m2.html">Terraformado de cortafuegos (M2)</a> · <a href="evaluacion-de-caminos-m4.html">Evaluación de caminos (M4)</a></p>
+<blockquote>
+<p>Documento de <strong>validez de la teoría</strong> que sostiene el producto del TFG: un
+cortafuegos es una franja despejada y nivelada que <strong>contiene el fuego</strong>, y su
+eficacia depende de <strong>cuán ancho</strong> es y de <strong>cómo está orientado respecto al
+avance del fuego</strong>. Aquí se enuncia la teoría, se diseña un experimento
+controlado sobre el motor real y se comprueba con datos.</p>
+<p>Reproducible: <code>python3 api/cortafuegos_validacion.py</code> · tests en
+<code>api/test_cortafuegos_validacion.py</code> (4 verdes). Fecha: 18 jun 2026.</p>
+</blockquote>
+<hr>
+<h2 id="1-la-teoria-que-hay-que-validar">1. La teoría que hay que validar</h2>
+<p>Un cortafuegos real funciona por dos mecanismos físicos distintos, y el motor del
+TFG los modela:</p>
+<ol>
+<li>
+<p><strong>Corta el combustible contiguo.</strong> Las celdas de la franja tienen
+   <code>fuel_coefficient = 0</code>, así que la <em>difusión por adyacencia</em> (una celda FUEL se
+   enciende si tiene un vecino BURNING) <strong>no puede atravesarla</strong>: no hay puente de
+   combustible. Esto, por sí solo, daría una contención <strong>binaria</strong> (cualquier
+   línea continua pararía el fuego), que es <strong>poco realista</strong>.</p>
+</li>
+<li>
+<p><strong>El calor puede saltar el hueco.</strong> El frente irradia calor al aire/suelo
+   contiguo; si la franja es estrecha, ese calor llega al otro lado por encima del
+   umbral de ignición (100 °C) y <strong>reignita</strong> el combustible. El motor añade un
+   <strong>enfriamiento ambiente</strong> (<code>reaccion.h</code>, <code>ENFRIAMIENTO_SUPERFICIE = 0.6/s</code>,
+   <code>dt = 0.5</code>) que disipa el calor con la distancia. Eso fija una <strong>distancia
+   característica de alcance</strong>: el calor solo cruza huecos más estrechos que ella.
+   (Detalle en <a href="contencion-del-cortafuegos-enfriamiento-m2.html">Contención del cortafuegos — enfriamiento (M2)</a>.)</p>
+</li>
+</ol>
+<p>De estos dos mecanismos salen las dos hipótesis:</p>
+<blockquote>
+<p><strong>H1 — Ancho.</strong> Existe un <strong>ancho crítico</strong>. Por debajo, el calor salta la
+franja y el fuego reignita al otro lado; por encima, el calor se disipa dentro
+del hueco y la franja <strong>contiene el cruce directo</strong>.</p>
+<p><strong>H2 — Orientación.</strong> A igualdad de superficie despejada, una franja
+<strong>transversal</strong> al avance del fuego (perpendicular a la dirección de
+propagación) protege mucho más que una <strong>longitudinal</strong> (paralela), porque
+cubre el sector angular por el que el frente se aproxima a lo que se quiere
+proteger. Una franja mal orientada se ve <strong>flanqueada</strong>: el fuego la rodea.</p>
+</blockquote>
+<hr>
+<h2 id="2-marco-experimental">2. Marco experimental</h2>
+<p>Todo en <strong>modo superficie</strong> (el producto) y sobre <strong>combustible contiguo</strong>. La
+propagación de superficie es <strong>isótropa</strong>: medido en el motor, el frente crece
+como un círculo casi perfecto (a t=60, radio_x≈138 ≈ radio_z≈139, centrado en la
+ignición). Eso es clave: sin viento ni anisotropía de combustible, la <strong>única</strong>
+variable es la geometría de la franja, que es justo lo que queremos aislar.</p>
+<ul>
+<li><strong>Ignición:</strong> <code>(900, 640)</code>, dentro de una mancha ~100 % de combustible. (La
+  ignición por defecto del bench, <code>(799,696)</code>, cae en <code>fuel=0</code> y no propaga —
+  ver <span class="wikilink-missing" title="nota no publicada: [project_ignicion_benchmark">[project_ignicion_benchmark</span> en memoria].)</li>
+<li><strong>Métrica:</strong> se acumula, sobre todos los ticks, el conjunto de celdas que
+  <strong>arden alguna vez</strong> en una zona de interés (robusto al quemado: una celda que
+  ardió y pasó a humo cuenta como "alcanzada").</li>
+</ul>
+<pre><code>            propagación isótropa (frente circular)
+                         ┌───────────┐
+        ●  ─────────────►│  franja   │────►  ¿llega el fuego al otro lado?
+     ignición            │ (fuel=0)  │
+      (900,640)          └───────────┘
+                          ancho ↔
+</code></pre>
+<hr>
+<h2 id="3-h1-ancho-existe-un-ancho-critico">3. H1 — Ancho: existe un ancho crítico</h2>
+<p><strong>Diseño.</strong> Pared transversal centrada en <code>x = 935</code>, alta en z (<code>z ∈ [610,670]</code>),
+de ancho variable. Se mide la <strong>sombra</strong>: un corredor estrecho (<code>z ∈ [636,644]</code>,
+6 celdas de profundidad) <strong>justo detrás</strong> de la franja, en el eje de la ignición.
+Ahí el fuego solo puede llegar <strong>cruzando</strong> la franja (salto de calor), no
+rodeándola — así se aísla el efecto del ancho. 30 ticks.</p>
+<p><strong>Resultado</strong> (<code>sombra_quemada</code> = celdas que arden en el corredor; <code>t_primera</code> =
+primer tick que cruza):</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Ancho (celdas)</th>
+<th style="text-align: right;">sombra_quemada</th>
+<th style="text-align: right;">t_primera</th>
+<th style="text-align: left;">¿contiene?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">0 (sin franja)</td>
+<td style="text-align: right;">54</td>
+<td style="text-align: right;">15</td>
+<td style="text-align: left;">—</td>
+</tr>
+<tr>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">54</td>
+<td style="text-align: right;">18</td>
+<td style="text-align: left;">❌ cruza igual</td>
+</tr>
+<tr>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">42</td>
+<td style="text-align: right;">26</td>
+<td style="text-align: left;">❌ cruza, ya debilitado</td>
+</tr>
+<tr>
+<td style="text-align: right;"><strong>4</strong></td>
+<td style="text-align: right;"><strong>0</strong></td>
+<td style="text-align: right;">—</td>
+<td style="text-align: left;">✅ <strong>contiene</strong></td>
+</tr>
+<tr>
+<td style="text-align: right;">6</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: left;">✅</td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: left;">✅</td>
+</tr>
+<tr>
+<td style="text-align: right;">12</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: left;">✅</td>
+</tr>
+<tr>
+<td style="text-align: right;">18</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: left;">✅</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lectura.</strong>
+- Hay un <strong>umbral nítido entre 3 y 4 celdas</strong> (≈ 3 m, celdas de 1×1 m). Por
+  debajo, el cortafuegos es inútil para el cruce directo (un ancho de 2 celdas se
+  comporta igual que no tener nada); por encima, lo <strong>contiene del todo</strong>.
+- El ancho también <strong>retrasa</strong> antes de fallar: <code>t_primera</code> pasa de 15 (sin
+  franja) a 26 (ancho 3) — el calor tarda más en acumularse y saltar.
+- El umbral coincide con la <strong>distancia característica de alcance</strong> que fija
+  <code>ENFRIAMIENTO_SUPERFICIE</code>. Subir el enfriamiento estrecharía el ancho crítico;
+  bajarlo lo ensancharía. Es el parámetro que calibra el realismo.</p>
+<blockquote>
+<p>✅ <strong>H1 validada.</strong> La contención <strong>depende del ancho</strong> y es <strong>gradual</strong> (no
+binaria), exactamente como exige la propuesta del TFG ("difusión por
+adyacencia" + disipación). Test: <code>test_ancho_*</code>.</p>
+</blockquote>
+<hr>
+<h2 id="4-h2-orientacion-transversal-protege-longitudinal-no">4. H2 — Orientación: transversal protege, longitudinal no</h2>
+<p><strong>Diseño.</strong> Una franja de <strong>área fija</strong> (<code>8 × 71 = ~568 celdas</code>) centrada en
+<code>(950, 640)</code>, entre la ignición y una <strong>región protegida P</strong> (<code>x ∈ [992,1012],
+z ∈ [624,656]</code>, 693 celdas). Se <strong>rota sobre su centro</strong> manteniendo el área:</p>
+<ul>
+<li><strong>θ = 0° transversal</strong> — eje largo en Z, perpendicular al avance (+X).</li>
+<li><strong>θ = 45° diagonal.</strong></li>
+<li><strong>θ = 90° longitudinal</strong> — eje largo en X, paralela al avance.</li>
+</ul>
+<p>La región P está <strong>separada</strong> de la franja para que ninguna orientación la
+despeje trivialmente. Se mide cuántas celdas de P arden en t = 30/40/50/60.</p>
+<pre><code>   θ=0 transversal           θ=90 longitudinal
+   (perpendicular)           (paralela al avance)
+
+   ●        █                ●     ████████
+ign │       █  ┌───┐      ign │              ┌───┐
+    └──────►█  │ P │         └──────────────►│ P │
+            █  └───┘            (el fuego        └───┘
+            █                    rodea la franja
+   el frente choca de            por arriba y abajo
+   lleno → P en sombra           → P queda expuesta)
+</code></pre>
+<p><strong>Resultado</strong> (celdas de P quemadas, P = 693):</p>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">t=30</th>
+<th style="text-align: right;">t=40</th>
+<th style="text-align: right;">t=50</th>
+<th style="text-align: right;">t=60</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sin franja</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">149</td>
+<td style="text-align: right;">693</td>
+<td style="text-align: right;">693</td>
+</tr>
+<tr>
+<td><strong>transversal (0°)</strong></td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;"><strong>0</strong></td>
+<td style="text-align: right;"><strong>165</strong></td>
+<td style="text-align: right;">693</td>
+</tr>
+<tr>
+<td>diagonal (45°)</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">476</td>
+<td style="text-align: right;">693</td>
+</tr>
+<tr>
+<td>longitudinal (90°)</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">14</td>
+<td style="text-align: right;">691</td>
+<td style="text-align: right;">693</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lectura.</strong>
+- En el <strong>tick operativo (t=50)</strong> el orden es monótono con la orientación:
+  <strong>transversal 165 ≪ diagonal 476 &lt; longitudinal 691 ≈ sin franja 693</strong>. La
+  misma cantidad de terreno despejado protege el <strong>76 % de P</strong> si está bien
+  orientada y <strong>prácticamente nada (0.3 %)</strong> si está mal orientada.
+- La longitudinal es casi indistinguible de <strong>no poner nada</strong>: el frente la
+  <strong>flanquea</strong> por arriba y por abajo y reconverge sobre P.
+- <strong>Matiz honesto (y físicamente correcto):</strong> en propagación isótropa una franja
+  <strong>finita</strong> no protege para siempre — a t=60 todos los escenarios convergen a
+  693 porque el fuego acaba <strong>rodeándola</strong>. La orientación gobierna <strong>cuánto
+  retrasa/protege dentro de la ventana operativa</strong>, no si protege eternamente.
+  En la práctica forestal esto se traduce en que un cortafuegos debe <strong>anclarse</strong>
+  en barreras naturales y <strong>abarcar el flanco</strong> del frente; si no, se rodea.</p>
+<blockquote>
+<p>✅ <strong>H2 validada.</strong> A igualdad de coste (celdas despejadas), <strong>la orientación
+respecto al fuego es determinante</strong>. Transversal ≫ diagonal ≫ longitudinal.
+Test: <code>test_orientacion_transversal_protege_mas_que_longitudinal</code>.</p>
+</blockquote>
+<hr>
+<h2 id="5-conexion-con-la-evaluacion-de-caminos-m4">5. Conexión con la evaluación de caminos (M4)</h2>
+<p>Estas dos hipótesis son la <strong>base física</strong> de la métrica compuesta de
+<a href="evaluacion-de-caminos-m4.html">Evaluación de caminos (M4)</a>:</p>
+<ul>
+<li>El factor <strong>eficacia</strong> (área salvada) y <strong>protección</strong> (zona valiosa salvada)
+  solo tienen sentido si un cortafuegos <em>puede</em> contener — H1 dice cuándo (ancho
+  ≥ crítico).</li>
+<li>Que el A* prefiera trazados <strong>transversales</strong> al avance esperado del fuego
+  (en lugar de paralelos) está justificado por H2: a igual coste de camino,
+  protegen mucho más.</li>
+<li>El <strong>análisis de sensibilidad</strong> del TFG puede ahora variar <code>ENFRIAMIENTO_
+  SUPERFICIE</code> (mueve el ancho crítico) y los pesos de la métrica, sabiendo qué
+  física hay detrás de cada número.</li>
+</ul>
+<hr>
+<h2 id="6-como-reproducir">6. Cómo reproducir</h2>
+<pre><code class="language-bash"># Experimento completo (tablas + JSON + veredicto de hipótesis)
+python3 api/cortafuegos_validacion.py --json /tmp/cortafuegos.json
+
+# Tests (afirman H1 y H2 sobre el motor real)
+cd api &amp;&amp; .venv/bin/python -m pytest test_cortafuegos_validacion.py -v
+</code></pre>
+<p>Determinismo: el motor no tiene RNG; misma ignición y misma geometría reproducen
+las cifras. La geometría (ignición, centros, región P) está calibrada para la
+mancha de combustible del <code>world.dat</code> actual; si se regenera el mundo, habría que
+recalibrar las coordenadas (no la teoría).</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

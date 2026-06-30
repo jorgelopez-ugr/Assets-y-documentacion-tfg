@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fase Benchmarking — Recopilatorio completo del milestone · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Fase Benchmarking — Recopilatorio completo del milestone</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<blockquote>
+<p>Este documento recoge <strong>todo</strong> lo descubierto durante el milestone
+<em>"Optimización del motor: paralelismo + reducción de coste"</em>
+(issues #61–#67), con datos, evidencias y las decisiones tomadas en
+cada paso. Pensado como pieza única, autocontenida, para
+presentación TFG y como material narrativo para futuras
+iteraciones del proyecto.</p>
+</blockquote>
+<hr>
+<h2 id="1-punto-de-partida-mayo-2026">1. Punto de partida (mayo 2026)</h2>
+<p>Tras <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4</a> el motor propagaba
+fuego correctamente, pero se volvía inusable cuando el frente crecía.
+Bench headless del 9-may-2026, ignición central, sin Godot conectado,
+Ryzen 7 5800H:</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th style="text-align: right;">BURNING</th>
+<th style="text-align: right;">SMOKE</th>
+<th style="text-align: right;">Latencia /tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td style="text-align: right;">3</td>
+<td style="text-align: right;">2</td>
+<td style="text-align: right;">27 ms</td>
+</tr>
+<tr>
+<td>60</td>
+<td style="text-align: right;">1 279</td>
+<td style="text-align: right;">3 255</td>
+<td style="text-align: right;">147 ms</td>
+</tr>
+<tr>
+<td>100</td>
+<td style="text-align: right;">2 651</td>
+<td style="text-align: right;">19 357</td>
+<td style="text-align: right;">726 ms</td>
+</tr>
+<tr>
+<td>140</td>
+<td style="text-align: right;">25 593</td>
+<td style="text-align: right;">99 360</td>
+<td style="text-align: right;">4.1 s</td>
+</tr>
+<tr>
+<td>160</td>
+<td style="text-align: right;">52 390</td>
+<td style="text-align: right;">260 915</td>
+<td style="text-align: right;">10.0 s</td>
+</tr>
+</tbody>
+</table>
+<p>CPU al ~2 % del total durante todo el bench → el motor corría
+<strong>monohilo</strong> y dejaba sin usar 7 de los 8 cores físicos.</p>
+<p><strong>Objetivo del milestone</strong>: tick a 50 k BURNING &lt; 1 segundo en
+Ryzen 5800H. Restricciones: API pública (<code>/tick</code>, <code>/snapshot</code>,
+<code>/ignite</code>, <code>/reset</code>) inalterable; cliente Godot intacto; cero
+regresiones en tests.</p>
+<hr>
+<h2 id="2-issues-ejecutadas-y-descubrimientos">2. Issues ejecutadas y descubrimientos</h2>
+<h3 id="61-benchmark-reproducible-y-baseline">#61 — Benchmark reproducible y baseline</h3>
+<p><strong>Qué se hizo</strong>: parametrizar <code>api/headless_bench.py</code> con <code>--csv</code> y
+documentación de determinismo (no hay RNG). Verificación: dos
+ejecuciones consecutivas con la misma ignición producen latencias
+cuya diferencia media es <strong>1.06 %</strong> — bien por debajo del 5 %.</p>
+<p><strong>Hallazgo importante</strong>: la simulación es <strong>100 % determinista a
+nivel de estado</strong>. <code>n_diffs</code>, <code>BURNING</code>, <code>SMOKE</code> por tick coinciden
+bit a bit entre runs. El único ruido es scheduling/cachés del SO
+sobre el wall-clock.</p>
+<p>Ver <a href="optimizacion-61-benchmark-reproducible.html">Optimización — 61 — Benchmark reproducible</a>.</p>
+<h3 id="62-profiling-fino">#62 — Profiling fino</h3>
+<p><strong>Qué se hizo</strong>: instrumentar <code>Simulacion::tick()</code> con
+<code>std::chrono::steady_clock</code> en cada fase (buoyancy, presión,
+advección, reacción, sostener_burning, halos, desact, act).
+Comando nuevo <code>STATS</code> en el protocolo motor + endpoint <code>GET /stats</code>
++ tabla de desglose en el bench.</p>
+<p><strong>Resultado</strong> a 80 ticks, ignición central:</p>
+<table>
+<thead>
+<tr>
+<th>Fase</th>
+<th style="text-align: right;">ms/tick</th>
+<th style="text-align: right;">% del CPU físico</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>presion</strong></td>
+<td style="text-align: right;">42.64</td>
+<td style="text-align: right;"><strong>69.6 %</strong></td>
+</tr>
+<tr>
+<td><strong>adveccion</strong></td>
+<td style="text-align: right;">17.23</td>
+<td style="text-align: right;"><strong>28.1 %</strong></td>
+</tr>
+<tr>
+<td>buoyancy</td>
+<td style="text-align: right;">0.70</td>
+<td style="text-align: right;">1.1 %</td>
+</tr>
+<tr>
+<td>resto (5 fases)</td>
+<td style="text-align: right;">0.72</td>
+<td style="text-align: right;">1.2 %</td>
+</tr>
+</tbody>
+</table>
+<p>Confirmó la hipótesis del CONTEXT — Jacobi domina. Sorpresa:
+advección es el segundo gran ladrillo (28 %), no estaba en el radar
+inicial.</p>
+<p><strong>Overhead de la instrumentación</strong>: 0.69 % sobre la latencia total —
+muy por debajo del 5 % exigido. Por eso se mantiene siempre activa.</p>
+<p>Ver <a href="optimizacion-62-profiling-por-fase.html">Optimización — 62 — Profiling por fase</a>.</p>
+<h3 id="63-parada-temprana-en-jacobi">#63 — Parada temprana en Jacobi</h3>
+<p><strong>Lo que NO funcionó</strong>: bajar el cap de 30 → 20 iteraciones a
+secas. La latencia de presión cae 31.7 % (✓) pero BURNING al tick
+100 cae <strong>-7.36 %</strong> (✗, fuera del ±5 %).</p>
+<p><strong>Lo que sí funcionó</strong>: añadir parada temprana al solver Jacobi
+manteniendo el cap en 30. <code>resolverPresion</code> calcula
+<code>max_x |p_nuevo(x) - p_actual(x)|</code> durante el barrido (1 fabs/max
+por celda, sin pasada extra) y rompe si baja de <code>epsilon = 0.5</code>.
+Justificación: el campo de presión se inicializa con el valor del
+tick anterior (warm-start), así que en la mayoría de cuadrantes
+2-3 iteraciones bastan para "seguir" la perturbación; las 30 fijas
+gastaban trabajo en estabilizar décimas.</p>
+<p><strong>Resultado a 100 ticks</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">30 fijos</th>
+<th style="text-align: right;">ε=0.5</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión</td>
+<td style="text-align: right;">60.45 ms/tick</td>
+<td style="text-align: right;">40.99 ms/tick</td>
+<td style="text-align: right;"><strong>-32.2 %</strong> ✓</td>
+</tr>
+<tr>
+<td>Avg iters/call</td>
+<td style="text-align: right;">30.00</td>
+<td style="text-align: right;">18.07</td>
+<td style="text-align: right;">-40 %</td>
+</tr>
+<tr>
+<td>BURNING tick 100</td>
+<td style="text-align: right;">2 651</td>
+<td style="text-align: right;">2 546</td>
+<td style="text-align: right;">-3.96 % ✓</td>
+</tr>
+<tr>
+<td>SMOKE tick 100</td>
+<td style="text-align: right;">19 357</td>
+<td style="text-align: right;">21 570</td>
+<td style="text-align: right;"><strong>+11.4 %</strong> ⚠️</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hallazgo crítico — respuesta NO monótona en ε</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>ε</th>
+<th style="text-align: right;">avg iters</th>
+<th style="text-align: right;">BURNING tick 100</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 (cap fijo 30)</td>
+<td style="text-align: right;">30.00</td>
+<td style="text-align: right;">2 651</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td style="text-align: right;">23.61</td>
+<td style="text-align: right;">2 649</td>
+</tr>
+<tr>
+<td>0.3</td>
+<td style="text-align: right;">20.03</td>
+<td style="text-align: right;"><strong>4 563 (+72 %)</strong></td>
+</tr>
+<tr>
+<td>0.5</td>
+<td style="text-align: right;">18.07</td>
+<td style="text-align: right;">2 546</td>
+</tr>
+</tbody>
+</table>
+<p>ε=0.3 dispara BURNING a 4 563 — rompe la propagación. El sistema
+tiene regímenes inestables: ciertas combinaciones de "corte casi
+convergido" + el acoplamiento no-lineal de la transición FUEL →
+BURNING (umbral de 100 °C) producen frentes muy distintos.
+Cualquier futura optimización del solver debe <strong>revalidar</strong> con
+bench a 100 ticks.</p>
+<p>Ver <a href="optimizacion-63-parada-temprana-jacobi.html">Optimización — 63 — Parada temprana Jacobi</a>.</p>
+<h3 id="64-paralelismo-openmp">#64 — Paralelismo OpenMP</h3>
+<p><strong>Implementación</strong>:
+- <code>-fopenmp</code> al Makefile, conftest.py, y scripts de test del motor.
+- 4 buffers únicos (<code>buf_adveccion_*</code>, <code>buf_presion_*</code>) → 4
+  <code>std::vector&lt;SubGrid&gt;</code> indexados por hilo.
+- Bucle de cuadrantes activos con
+  <code>#pragma omp parallel for schedule(dynamic, 1)</code>.
+- Profile actualizado con <code>#pragma omp atomic update</code>.
+- Halos / activación / desactivación quedan secuenciales tras la
+  barrera implícita.</p>
+<p><strong>Determinismo</strong>: cada cuadrante en el cuerpo del bucle paralelo
+sólo lee y escribe SU propio grid + SU buffer-de-hilo. No hay
+cross-talk entre cuadrantes. Verificado: BURNING/SMOKE/iters por
+call coinciden a 3 dígitos entre 1, 4, 8 y 16 hilos.</p>
+<p><strong>Resultado a 160 ticks</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">/tick max</th>
+<th style="text-align: right;">Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo (baseline)</td>
+<td style="text-align: right;">10 693 ms</td>
+<td style="text-align: right;">1.00×</td>
+</tr>
+<tr>
+<td>4 hilos, dynamic</td>
+<td style="text-align: right;"><strong>9 665 ms</strong></td>
+<td style="text-align: right;"><strong>1.11×</strong> ← mejor</td>
+</tr>
+<tr>
+<td>8 hilos, dynamic</td>
+<td style="text-align: right;">11 284 ms</td>
+<td style="text-align: right;">0.95×</td>
+</tr>
+<tr>
+<td>8 hilos pinned</td>
+<td style="text-align: right;">11 625 ms</td>
+<td style="text-align: right;">0.92×</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Criterio del 4× NO cumplido. Diagnóstico: contención de cache L3.</strong></p>
+<p>Cada cuadrante aloca un grid de 50×50×20 ≈ <strong>1.6 MB</strong>. Working set
+de N hilos:</p>
+<table>
+<thead>
+<tr>
+<th>Hilos</th>
+<th style="text-align: right;">Working set</th>
+<th>vs L3 (16 MB)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td style="text-align: right;">1.6 MB</td>
+<td>10 %</td>
+</tr>
+<tr>
+<td>4</td>
+<td style="text-align: right;">6.4 MB</td>
+<td>40 %</td>
+</tr>
+<tr>
+<td>8</td>
+<td style="text-align: right;">12.8 MB</td>
+<td>80 %</td>
+</tr>
+<tr>
+<td>16</td>
+<td style="text-align: right;">25.6 MB</td>
+<td><strong>160 %</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A 8-16 hilos saturamos L3. La fase de presión, en especial, golpea
+el campo de velocidad ~6 veces por celda por iter Jacobi
+(~5.4 millones de lecturas por cuadrante por tick). Verificado por
+descarte: <code>OMP_NUM_THREADS=1</code> con el binario paralelo da los
+mismos números que el binario pre-#64; pinning a cores físicos no
+cambia nada.</p>
+<p>Ver <a href="optimizacion-64-paralelismo-openmp.html">Optimización — 64 — Paralelismo OpenMP</a>.</p>
+<h3 id="66-precomputar-divergencia-priorizada-antes-de-65">#66 — Precomputar divergencia (priorizada antes de #65)</h3>
+<p><strong>Razón del reordenamiento</strong>: tras #64 quedó claro que el
+paralelismo no paga porque el cómputo es memory-bound. El propio
+comentario de <code>presion.h</code> decía "la velocidad NO cambia durante
+Jacobi", pero <code>calcularDivergencia(g, x, y, z)</code> se llamaba dentro
+del bucle de iteraciones. Lift the loop invariant.</p>
+<p><strong>Implementación</strong>: <code>resolverPresion</code> acepta un buffer
+<code>std::vector&lt;float&gt;&amp; div_buf</code>. Pre-loop barre <code>(z, y, x)</code> rellenando
+<code>buf_a.cells[i].pressure</code> (warm-start) y <code>div_buf[i]</code> (divergencia)
+en un solo pase con índice lineal monotónico. Bucle Jacobi
+sustituye <code>calcularDivergencia(...)</code> por <code>div_buf[i]</code>.</p>
+<p><strong>Resultado a 100 ticks (secuencial)</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">post-#63</th>
+<th style="text-align: right;">post-#66</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión</td>
+<td style="text-align: right;">40.99 ms/tick</td>
+<td style="text-align: right;"><strong>21.78 ms/tick</strong></td>
+<td style="text-align: right;"><strong>-46.9 %</strong> ✓</td>
+</tr>
+<tr>
+<td>Total CPU sum</td>
+<td style="text-align: right;">68.47 ms</td>
+<td style="text-align: right;">48.41 ms</td>
+<td style="text-align: right;">-29.3 %</td>
+</tr>
+<tr>
+<td>/tick mediana</td>
+<td style="text-align: right;">204 ms</td>
+<td style="text-align: right;">182 ms</td>
+<td style="text-align: right;">-10.7 %</td>
+</tr>
+<tr>
+<td>BURNING/SMOKE/iters</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;"><strong>bit-idéntico</strong> ✓</td>
+</tr>
+</tbody>
+</table>
+<p>Criterio del issue (&gt;15 %): cumplido con margen.</p>
+<p><strong>Re-bench de #64 con divergencia precomputada (160 ticks)</strong>:</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">/tick max post-#63</th>
+<th style="text-align: right;">/tick max post-#66</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo</td>
+<td style="text-align: right;">10 693 ms</td>
+<td style="text-align: right;">10 176 ms</td>
+</tr>
+<tr>
+<td>4 hilos</td>
+<td style="text-align: right;">9 665 ms</td>
+<td style="text-align: right;">9 738 ms</td>
+</tr>
+<tr>
+<td>8 hilos</td>
+<td style="text-align: right;"><strong>11 284 ms</strong></td>
+<td style="text-align: right;"><strong>9 633 ms</strong></td>
+</tr>
+</tbody>
+</table>
+<h1 id="66-elimina-la-regresion-a-8-hilos-el-escalado-vuelve-a-ser">66 <strong>elimina la regresión a 8 hilos</strong> — el escalado vuelve a ser</h1>
+<p>monótono positivo. Pero el 4× <strong>sigue sin alcanzarse</strong>.</p>
+<p>Ver <a href="optimizacion-66-precomputar-divergencia.html">Optimización — 66 — Precomputar divergencia</a>.</p>
+<h3 id="65-validacion-fisica">#65 — Validación física</h3>
+<p>Validación dividida en dos preguntas porque el orden estricto del
+issue (300 ticks pre/post paralelismo) era incompatible con #63
+(que cambió la numérica intencionadamente).</p>
+<p><strong>Validación 1 — paralelismo per se</strong>: bit-idéntica.
+BURNING/SMOKE/iters por call coinciden a 3 dígitos entre
+<code>OMP_NUM_THREADS</code> ∈ {1, 4, 8, 16} con el binario post-#66.</p>
+<p><strong>Validación 2 — milestone completo vs main</strong> (200 ticks):</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th style="text-align: right;">BURNING main</th>
+<th style="text-align: right;">BURNING actual</th>
+<th style="text-align: right;">Δ %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50</td>
+<td style="text-align: right;">669</td>
+<td style="text-align: right;">723</td>
+<td style="text-align: right;">+8.07 %</td>
+</tr>
+<tr>
+<td>100</td>
+<td style="text-align: right;">2 651</td>
+<td style="text-align: right;">2 546</td>
+<td style="text-align: right;">-3.96 %</td>
+</tr>
+<tr>
+<td>150</td>
+<td style="text-align: right;">42 221</td>
+<td style="text-align: right;">42 955</td>
+<td style="text-align: right;">+1.74 %</td>
+</tr>
+<tr>
+<td>200</td>
+<td style="text-align: right;">293 620</td>
+<td style="text-align: right;">178 758</td>
+<td style="text-align: right;">-39.12 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lectura cualitativa</strong>: la propagación está adelantada ~10-20
+ticks. A tick 200 con <code>main</code> muchas celdas todavía están BURNING;
+en el actual ya transitaron a SMOKE. <strong>El número total de celdas
+afectadas (BURNING + SMOKE) sólo difiere un 1 %</strong> (1 267 030 vs
+1 289 783). El frente cubre el mismo terreno; lo que cambia es el
+ritmo de transición de estado por la velocidad menos
+correctamente proyectada.</p>
+<p>Para el caso de uso del simulador (visualización a gestores
+forestales) esto es físicamente equivalente.</p>
+<p>Ver <a href="optimizacion-65-validacion-fisica.html">Optimización — 65 — Validación física</a>.</p>
+<hr>
+<h2 id="3-estado-final-del-motor-numeros">3. Estado final del motor — números</h2>
+<p>Bench secuencial 100 ticks, ignición central, Ryzen 5800H:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">main (pre milestone)</th>
+<th style="text-align: right;">rama actual</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>/tick mediana</td>
+<td style="text-align: right;">220 ms (estimado)</td>
+<td style="text-align: right;"><strong>182 ms</strong></td>
+<td style="text-align: right;">-17 %</td>
+</tr>
+<tr>
+<td>Presión ms/tick</td>
+<td style="text-align: right;">60.45</td>
+<td style="text-align: right;"><strong>21.78</strong></td>
+<td style="text-align: right;"><strong>-64 %</strong></td>
+</tr>
+<tr>
+<td>Avg iters Jacobi</td>
+<td style="text-align: right;">30 (fijo)</td>
+<td style="text-align: right;"><strong>18.07</strong></td>
+<td style="text-align: right;">-40 %</td>
+</tr>
+<tr>
+<td>Total CPU sum</td>
+<td style="text-align: right;">~88 ms</td>
+<td style="text-align: right;"><strong>48 ms</strong></td>
+<td style="text-align: right;">-45 %</td>
+</tr>
+</tbody>
+</table>
+<p>Bench a 160 ticks (peak, 57 k BURNING):</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">/tick max main</th>
+<th style="text-align: right;">/tick max actual</th>
+<th style="text-align: right;">Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo</td>
+<td style="text-align: right;">10 693 ms</td>
+<td style="text-align: right;">10 176 ms</td>
+<td style="text-align: right;">1.05×</td>
+</tr>
+<tr>
+<td>4 hilos</td>
+<td style="text-align: right;">n/a (no había OpenMP)</td>
+<td style="text-align: right;">9 738 ms</td>
+<td style="text-align: right;">1.10×</td>
+</tr>
+<tr>
+<td>8 hilos</td>
+<td style="text-align: right;">n/a</td>
+<td style="text-align: right;">9 633 ms</td>
+<td style="text-align: right;">1.11×</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="4-por-que-no-se-llego-al-4-el-cuello-de-botella-es-io">4. Por qué NO se llegó al 4× — el cuello de botella es I/O</h2>
+<p>El criterio del milestone era 4× a 50 k BURNING. <strong>No se cumple</strong>.
+Hemos llegado a 1.11× con 8 hilos a tick 160 (57 k BURNING). La
+explicación es geométrica:</p>
+<p>A tick 160 el <code>/tick</code> HTTP wall-clock es ~10 segundos. Si
+descomponemos en qué consume ese tiempo:</p>
+<table>
+<thead>
+<tr>
+<th>Fase</th>
+<th style="text-align: right;">post-#66 1-thread (160 ticks)</th>
+<th style="text-align: right;">% del /tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión (motor)</td>
+<td style="text-align: right;">134 ms/tick avg</td>
+<td style="text-align: right;">~1.3 %</td>
+</tr>
+<tr>
+<td>Advección (motor)</td>
+<td style="text-align: right;">98 ms/tick avg</td>
+<td style="text-align: right;">~1.0 %</td>
+</tr>
+<tr>
+<td>Resto motor</td>
+<td style="text-align: right;">~9 ms/tick</td>
+<td style="text-align: right;">~0.1 %</td>
+</tr>
+<tr>
+<td><strong>I/O motor (CHANGED por stdout)</strong></td>
+<td style="text-align: right;">resto</td>
+<td style="text-align: right;"><strong>~30-40 %</strong></td>
+</tr>
+<tr>
+<td><strong>HTTP / JSON / Python state diff</strong></td>
+<td style="text-align: right;">resto</td>
+<td style="text-align: right;"><strong>resto</strong></td>
+</tr>
+</tbody>
+</table>
+<p>El motor emite ~21 768 líneas <code>CHANGED</code> por stdout por tick a 160.
+La API las parsea, calcula diffs, serializa a JSON, manda HTTP. <strong>El
+cómputo físico del motor es menos del 3 % del <code>/tick</code> total</strong>. El
+paralelismo del motor ya no puede mover la aguja — atacar el 4×
+requeriría rediseñar el pipeline I/O completo (protocolo binario,
+diffs en C++, etc.), fuera de scope.</p>
+<p>Decisión del proyecto: <strong>aceptar el límite I/O como asíntota</strong> y
+dedicar los siguientes milestones a otras facetas del simulador
+(cortafuegos, viento), no a más optimización.</p>
+<hr>
+<h2 id="5-decisiones-tomadas-con-consecuencias-futuras">5. Decisiones tomadas con consecuencias futuras</h2>
+<h3 id="51-05-en-jacobi-patron-no-monotono-en">5.1 ε = 0.5 en Jacobi → patrón no-monótono en ε</h3>
+<p>Cualquier cambio futuro en el solver de presión (precomputar
+bordes, SOR, multigrid, cambiar la malla) <strong>debe revalidar</strong> con el
+bench a 100 ticks que BURNING se mantiene dentro del ±5 % del
+baseline post-#63 (2 546 ± 127). El parámetro está parametrizado
+en <code>Simulacion::EPSILON_PRESION</code> con un comentario explícito.</p>
+<h3 id="52-snapshot-del-determinismo-numerico-re-capturado">5.2 Snapshot del determinismo numérico re-capturado</h3>
+<p><code>test_determinismo_numerico_adveccion</code> en <code>engine/test_simulacion.cpp</code>
+ahora tiene valores calibrados a (ITERS=30, EPSILON=0.5f, divergencia
+precomputada). Cualquier cambio que toque presion.h o el orden de
+fases debe revalidar y re-snapshotar con justificación.</p>
+<h3 id="53-paralelismo-bit-determinista-por-construccion">5.3 Paralelismo bit-determinista por construcción</h3>
+<p>Por contrato, el bucle paralelo de <code>Simulacion::tick()</code> produce los
+mismos floats independientemente del número de hilos. Cualquier
+futura optimización (ej: lazy halos, reducción no determinista)
+<strong>debe</strong> preservar esto o documentar la pérdida.</p>
+<h3 id="54-openmp-es-ahora-dependencia-de-build">5.4 OpenMP es ahora dependencia de build</h3>
+<p><code>-fopenmp</code> está en el Makefile, <code>build_motor_debug.sh</code>, los scripts
+de test, y <code>api/conftest.py</code>. Los binarios pre-compilados
+<code>test_buoyancy</code>, <code>test_reaccion</code>, <code>test_serializar</code> siguen
+funcionando porque incluyen sólo cabeceras de física (no
+<code>simulacion.h</code>) y no necesitan OpenMP — pero si en el futuro
+incluyen <code>simulacion.h</code> habrá que añadir <code>-fopenmp</code> a su build.</p>
+<hr>
+<h2 id="6-trabajo-futuro-identificado">6. Trabajo futuro identificado</h2>
+<h3 id="61-para-llegar-al-4-del-milestone-si-se-reabriera">6.1 Para llegar al 4× del milestone (si se reabriera)</h3>
+<ol>
+<li><strong>Reducir CHANGED emitidos</strong>: el motor sigue emitiendo ~22 k
+   líneas por tick a tick 160. Filtrar por relevancia visual
+   (issue #59 lo hizo parcialmente) o agrupar.</li>
+<li><strong>Protocolo binario</strong>: salir de stdin/stdout texto. Memoria
+   compartida o sockets binarios eliminan el coste de parseo.</li>
+<li><strong>Diffs en C++</strong>: hoy el state diff vive en Python. Moverlo al
+   motor evitaría parsear las CHANGED en el lado API.</li>
+</ol>
+<h3 id="62-para-evolucionar-el-simulador-siguiente-milestone">6.2 Para evolucionar el simulador (siguiente milestone)</h3>
+<ol>
+<li><strong>Cortafuegos pintables desde Godot</strong> (ver
+   <code>.claude/HANDOFF-cortafuegos.md</code>).</li>
+<li><strong>Viento global / direccional</strong> (ver <code>.claude/HANDOFF-viento.md</code>).</li>
+<li><strong>Multigrid o SOR</strong> en el solver de presión: Jacobi sobre Poisson
+   es famoso por convergencia lenta. SOR (ω≈1.7) o multigrid
+   convergerían dramáticamente más rápido. Fuera de scope hasta que
+   el simulador tenga features narrativas.</li>
+</ol>
+<hr>
+<h2 id="7-comando-estandar-de-comparacion">7. Comando estándar de comparación</h2>
+<p>Quedó documentado en el docstring de <code>api/headless_bench.py</code> y se
+usó en todos los PRs del milestone:</p>
+<pre><code class="language-bash">python3 api/headless_bench.py --ticks 200 --csv bench_&lt;rama&gt;.csv
+</code></pre>
+<p>Para validación física (counts + bbox BURNING):</p>
+<pre><code class="language-bash">python3 api/headless_bench.py --ticks 200 --snapshot-cada 50 \
+    --validacion-json /tmp/post.json
+python3 tools/comparar_validacion.py \
+    --pre /tmp/baseline.json --post /tmp/post.json --md /tmp/comp.md
+</code></pre>
+<p>Para validar contra binario sin STATS (p.ej. <code>main</code> pre-#62):</p>
+<pre><code class="language-bash">python3 api/headless_bench.py --ticks 200 --no-perfil ...
+</code></pre>
+<hr>
+<h2 id="8-como-se-cierra-este-milestone">8. Cómo se cierra este milestone</h2>
+<ul>
+<li><strong>Issues #61, #62, #63, #66, #65</strong>: cerradas (✓).</li>
+<li><strong>Issue #64</strong>: cerrada con criterio cuantitativo no cumplido,
+  documentado por qué (cuello de botella desplazado a I/O).</li>
+<li><strong>Issue #67</strong>: este documento + actualización de README con
+  OpenMP.</li>
+<li><strong>Doc Obsidian completa</strong>: este recopilatorio + 6 docs por issue</li>
+<li>documento paraguas (<code>Optimización — Paralelismo y Coste</code>).</li>
+<li><strong>Trabajo futuro</strong>: dos handoffs en <code>.claude/</code> para los próximos
+  milestones (cortafuegos y viento), pensados para arrancar
+  conversaciones nuevas con contexto limpio.</li>
+<li><strong>Rama</strong>: <code>implementando-paralelismo</code> lista para PR cuando el
+  usuario decida. PR a main pendiente de su decisión.</li>
+</ul>
+<p>Total de commits del milestone:
+1. <code>15cd647</code> feat(bench): salida CSV y nota de determinismo — closes #61
+2. <code>2b7111c</code> feat(motor): instrumentar tick con std::chrono — closes #62
+3. <code>ba15f58</code> perf(presion): parada temprana en Jacobi — closes #63
+4. <code>262aa19</code> perf(motor): paralelizar bucle de cuadrantes con OpenMP — closes #64
+5. <code>b8a5633</code> perf(presion): precomputar divergencia fuera de Jacobi — closes #66
+6. <code>dce8fea</code> feat(bench): bbox BURNING + JSON de validación — closes #65
+7. <code>44713b0</code> refactor(motor): parametrizar ITERS_PRESION_MAX y EPSILON_PRESION
+8. <code>&lt;este commit&gt;</code> docs: recopilatorio de fase benchmarking — closes #67</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

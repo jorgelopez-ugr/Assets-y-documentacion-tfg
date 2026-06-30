@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pesos del A* en el HUD (M8, #163–#166) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Pesos del A* en el HUD (M8, #163–#166)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Cómo el gestor ajusta en vivo los pesos de la función de coste del trazado
+automático y genera caminos distintos. Cierra la nota "Pendiente" de
+<a href="trazado-automatico-a-coste-y-datos-m3.html">Trazado automático A — coste y datos (M3)</a>.</p>
+</blockquote>
+<h2 id="idea">Idea</h2>
+<p>El A<em> del trazado minimiza un coste ponderado por </em><em>cuatro pesos</em><em> (longitud,
+pendiente, biomasa, especies — ver <a href="trazado-automatico-a-coste-y-datos-m3.html">Trazado automático A — coste y datos (M3)</a>).
+Hasta M8 esos pesos eran </em><em>fijos</em><em>: el A</em> corría siempre con los defaults
+(<code>w_longitud=1</code>, <code>w_pendiente=5</code>, <code>w_biomasa=2</code>, <code>w_especies=5</code>). M8 los <strong>expone
+en el HUD</strong> como cuatro sliders que el gestor mueve para priorizar un criterio u
+otro y comparar caminos — es el <strong>análisis de sensibilidad</strong> que pide la propuesta
+del TFG, ahora interactivo.</p>
+<p>La API ya aceptaba pesos a medida en <code>POST /trazar</code> (clave opcional <code>pesos</code>); lo
+que faltaba era el endpoint de defaults y la UI en Godot.</p>
+<h2 id="que-hace-cada-peso">Qué hace cada peso</h2>
+<table>
+<thead>
+<tr>
+<th>Peso</th>
+<th>Sube ⇒ el camino…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Longitud</strong></td>
+<td>se acorta (penaliza cada paso; recto 1, diagonal √2).</td>
+</tr>
+<tr>
+<td><strong>Pendiente</strong></td>
+<td>evita cuestas (penaliza la pendiente m/m del DEM).</td>
+</tr>
+<tr>
+<td><strong>Biomasa</strong></td>
+<td>esquiva vegetación densa (penaliza el <code>fuel</code> 0..1).</td>
+</tr>
+<tr>
+<td><strong>Especies</strong></td>
+<td>preserva especies protegidas (pino, encina, quejigo).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="defaults-una-sola-fuente-de-verdad">Defaults: una sola fuente de verdad</h2>
+<p>Los defaults viven en <code>CosteParams</code> (<code>api/pathfinding.py</code>). Para que el HUD no los
+duplique, se añadió:</p>
+<pre><code>GET /trazar/defaults
+→ {&quot;w_longitud&quot;:1.0, &quot;w_pendiente&quot;:5.0, &quot;w_biomasa&quot;:2.0, &quot;w_especies&quot;:5.0}
+</code></pre>
+<p>construido desde <code>CosteParams()</code>, no con literales. Si un default cambia en
+Python, el HUD lo refleja al arrancar sin tocar Godot.</p>
+<h2 id="hud-godot">HUD (Godot)</h2>
+<p>Sección <strong>"Pesos del trazado (A*)"</strong> con cuatro sliders (<code>[0,10]</code>, paso <code>0.5</code>),
+cada uno con su etiqueta de valor, y un botón <strong>"Reset pesos"</strong> que los devuelve al
+default. Al arrancar, Godot pide <code>GET /trazar/defaults</code> y los inicializa; hasta que
+llegan, quedan deshabilitados (y el trazado usa los defaults del backend).</p>
+<p>Los pesos se leen <strong>en el momento del trazado</strong> (los 2 clicks de la herramienta
+"Auto"): mover un slider no recalcula nada por sí solo. <code>_pedir_trazado</code> añade
+<code>"pesos"</code> al payload solo si los defaults ya llegaron — así nunca se envían ceros
+de sliders sin inicializar.</p>
+<h2 id="verificacion">Verificación</h2>
+<p>Mismo origen <code>(799,696)</code> → destino <code>(830,720)</code>, cambiando un solo peso al máximo
+(evidencia numérica del contrato; las capturas en Godot van abajo):</p>
+<table>
+<thead>
+<tr>
+<th>Pesos</th>
+<th>Celdas</th>
+<th>¿Difiere?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>default</td>
+<td>36</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>w_pendiente=10</code></td>
+<td>32</td>
+<td>sí (rodea pendiente)</td>
+</tr>
+<tr>
+<td><code>w_biomasa=10</code></td>
+<td>38</td>
+<td>sí (esquiva biomasa)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>API: <code>test_trazar_defaults_coincide_con_costeparams</code> (compara contra
+  <code>CosteParams()</code>, sin hardcodear números). Suite <code>test_endpoints.py</code>: 45 verdes.</li>
+<li>Godot: <code>--check-only</code> del script en verde; verificación visual de que los sliders
+  aparecen en los defaults, se mueven, el valor sigue y "Reset" los repone.</li>
+</ul>
+<blockquote>
+<p><strong>Capturas (pendientes de añadir):</strong> mismo par de puntos con pendiente↑ vs
+biomasa↑, mostrando los dos caminos distintos sobre el terreno.</p>
+</blockquote>
+<h2 id="alcance">Alcance</h2>
+<p>Solo los pesos del <strong>trazado</strong> (A<em>). Los pesos de la </em><em>métrica de evaluación</em>*
+(<code>PesosMetrica</code>, <a href="evaluacion-de-caminos-m4.html">Evaluación de caminos (M4)</a>) quedan fuera de M8.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El sistema de un vistazo — diagramas para la presentación</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · sistema · <a href="index.html">índice</a></p>
+    <h1>El sistema de un vistazo</h1>
+    <p class="sub">Cuatro esquemas <strong>exportables</strong> (PNG) pensados para
+      las diapositivas y la memoria: el <strong>pipeline</strong> de datos, la
+      <strong>separación de capas</strong>, las <strong>tres fases de uso</strong> y
+      los <strong>dos modos de física</strong>. Generados con Python (matplotlib).</p>
+  </header>
+
+  <p>La página <a href="arquitectura.html">«La API como orquestador»</a> cuenta la
+    arquitectura con HTML/CSS animado: perfecto para leerlo en pantalla, pero no se
+    puede pegar en unas diapositivas ni en la memoria en PDF. Estas cuatro figuras
+    cubren ese hueco — son imágenes estáticas, limpias y a alta resolución. Y, fieles
+    al espíritu del <a href="como-funciona.html">testing-lab</a>, <strong>no inventan
+    nada</strong>: el tamaño del cuadrante, las capas del modo superficie y el número
+    de endpoints se <strong>leen del código real</strong> (<code>engine/cuadrante.h</code>,
+    <code>engine/simulacion.h</code>, <code>api/main.py</code>) al generar el diagrama,
+    así que no pueden desviarse del sistema.</p>
+
+  <!-- ═══════════════════════════ 1 · PIPELINE ═════════════════════════════ -->
+  <h2>1 · El pipeline: del dato bruto al producto</h2>
+  <figure>
+    <img src="../out/sistema_pipeline.png" alt="Pipeline: DEM + hiperespectral → build_world.py → world.dat → motor C++ ⇄ FastAPI ⇄ Godot">
+    <figcaption>
+      Dos tiempos bien separados. <b>Offline, una vez:</b> el DEM
+      (<code>heightmap_16bit.png</code>) y la imagen hiperespectral (vegetación) se
+      compilan con <code>tools/build_world.py</code> en <code>data/world.dat</code>, la
+      <b>fuente de verdad</b>. <b>En vivo:</b> el motor C++ carga ese mundo una sola
+      vez y conversa con la API (líneas <code>stdin/stdout</code>) y esta con Godot
+      (HTTP/JSON).
+    </figcaption>
+  </figure>
+  <p>Lo que demuestra: el mundo es <strong>fijo</strong> y caro de construir, por eso
+    se precompila; lo que cambia en cada sesión (el fuego, los cortafuegos) vive en el
+    trío en ejecución. El pie de la figura lleva las magnitudes reales del terreno.</p>
+
+  <!-- ═══════════════════════════ 2 · CAPAS ════════════════════════════════ -->
+  <h2>2 · Separación estricta de capas</h2>
+  <figure>
+    <img src="../out/sistema_capas.png" alt="Tres capas (Godot, FastAPI, motor C++) y la fuente de datos, con sus dos fronteras">
+    <figcaption>
+      Tres procesos que <b>no se conocen entre sí</b> y dos fronteras. Cada caja dice
+      qué hace y —lo importante— qué <b>NO</b> hace: Godot no simula, la API no calcula
+      física, el motor no sabe de red. La columna de la derecha resume «la regla de
+      oro»: si una capa hace el trabajo de otra, la frontera se rompe.
+    </figcaption>
+  </figure>
+  <p>Lo que demuestra: la testabilidad del sistema nace de aquí. Como cada capa está
+    aislada, el <a href="como-funciona.html">testing-lab</a> puede probar el motor sin
+    arrancar la API, y la API sin Godot. El detalle (el lock, el protocolo de líneas,
+    el ciclo de vida del proceso) está en <a href="arquitectura.html">«La API como
+    orquestador»</a>.</p>
+
+  <!-- ═══════════════════════════ 3 · FASES ════════════════════════════════ -->
+  <h2>3 · Las tres fases de uso</h2>
+  <figure>
+    <img src="../out/sistema_fases.png" alt="Las tres fases: PINTAR → QUEMA → EVALUAR, con sus disparadores">
+    <figcaption>
+      Cómo usa la herramienta un gestor forestal. <b>PINTAR</b> el cortafuegos (a mano
+      o con el A*) → la <b>1ª chispa</b> arranca la <b>QUEMA</b> en modo superficie con
+      un temporizador → cuando el fuego se apaga (5 s sin actividad) o vence el timer,
+      la herramienta pasa <b>automáticamente</b> a <b>EVALUAR</b> y muestra la
+      puntuación del camino.
+    </figcaption>
+  </figure>
+  <p>Lo que demuestra: el flujo del TFG de punta a punta —<em>trazar → propagar →
+    puntuar</em>— condensado. Cada transición está disparada por un evento real, no por
+    un clic manual: la evaluación es automática y reproducible, que es lo que la
+    convierte en una medida y no en una anécdota.</p>
+
+  <!-- ═══════════════════════════ 4 · MODOS ════════════════════════════════ -->
+  <h2>4 · Dos modos de física, un flag</h2>
+  <figure>
+    <img src="../out/sistema_modos.png" alt="Columna de celdas en modo superficie (K=1) vs volumétrico (K=20)">
+    <figcaption>
+      El motor solo calcula las celdas <b>vivas</b> de cada columna. En
+      <b>superficie</b> (<code>K=1</code>, el default) eso es el suelo más una capa de
+      aire: el resto de la columna es inerte y ni se toca. En <b>volumétrico</b>
+      (<code>K=20</code>, tras el flag) se calculan las 20 capas — advección, presión,
+      buoyancy y humo. Misma geometría, ~20× más trabajo por columna.
+    </figcaption>
+  </figure>
+  <p>Lo que demuestra: por qué el producto del TFG se evalúa en superficie (rápido y
+    estable) y el motor de fluidos completo queda como <em>demo técnica</em> de la
+    defensa, encendible con un flag sin borrar nada. El porqué del coste está en
+    <a href="volumetrico.html">«Volumétrico (K=20) vs superficie (K=1)»</a>.</p>
+
+  <div class="nota">
+    <strong>Cómo regenerarlas:</strong>
+    <code>testing-lab/.venv/bin/python testing-lab/experiments/sistema.py</code> escribe
+    los cuatro <code>out/sistema_*.png</code>. La cordura
+    (<code>tests/test_sistema.py</code>) verifica que los números del diagrama siguen
+    coincidiendo con el código: si alguien renombra una constante del motor o quita un
+    endpoint, el test lo caza.
+  </div>
+
+  <footer class="pie">
+    En una frase: <strong>un mundo fijo que se precompila, tres capas que no se conocen,
+    tres fases que van solas y dos modos de física tras un flag.</strong> Vuelve al
+    <a href="index.html">índice</a> o pasa al detalle en
+    <a href="arquitectura.html">la arquitectura</a>.
+  </footer>
+
+</div>
+</body>
+</html>

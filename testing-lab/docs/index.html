@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>testing-lab — documentación</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  .ops { display: grid; gap: 1rem; margin: 1.5rem 0; }
+  .op {
+    display: flex; align-items: baseline; gap: 1rem;
+    background: var(--papel); border: 1px solid var(--linea);
+    border-radius: 12px; padding: 1.1rem 1.3rem; text-decoration: none;
+    color: inherit; transition: border-color .15s, transform .15s;
+  }
+  a.op:hover { border-color: var(--acento); transform: translateY(-2px); }
+  .op .n { font-weight: 700; color: var(--acento); font-variant-numeric: tabular-nums;
+           font-family: var(--mono); font-size: 1.15rem; }
+  .op .t { font-weight: 650; font-size: 1.12rem; color: var(--titulo); }
+  .op .d { color: var(--tinta-soft); font-size: .92rem; }
+  .op.pend { opacity: .55; }
+  .badge {
+    margin-left: auto; font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .05em; padding: .22rem .65rem; border-radius: 999px;
+    font-family: var(--mono);
+  }
+  .badge.ok   { background: rgba(87, 211, 154, .14); color: var(--ok); }
+  .badge.todo { background: rgba(147, 161, 177, .14); color: var(--tinta-soft); }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · caminos forestales</p>
+    <h1>testing-lab — documentación</h1>
+    <p class="sub">Cada operación del motor C++, aislada y demostrada con gráficos
+      de <strong>comportamiento</strong> y de <strong>rendimiento</strong>. Aquí se
+      explica qué muestra cada gráfico y qué demuestra.</p>
+  </header>
+
+  <p>El laboratorio aísla cada función del motor sobre un grid sintético y la
+    mide sin pasar por la API ni por Godot, y <strong>sin tocar el motor</strong>
+    (solo <code>#include</code> de cabeceras). Como las funciones se llaman
+    directamente, podemos meterles cualquier carga y medir su techo de
+    rendimiento, libre del límite que impone el bucle de simulación real.</p>
+
+  <h2 style="font-size:1.25rem; margin:2.4rem 0 .3rem; border-bottom:1px solid var(--linea); padding-bottom:.4rem;">
+    El producto y la presentación</h2>
+  <p style="color:var(--tinta-soft); margin:.4rem 0 1rem; font-size:.95rem;">
+    Esquemas y resultados <strong>exportables</strong> (PNG) pensados para la memoria
+    y las diapositivas: la arquitectura, el terreno real, la métrica y la comparativa
+    de caminos con fuego real.</p>
+
+  <div class="ops">
+    <a class="op" href="comparativa.html">
+      <span class="n">★</span>
+      <span>
+        <span class="t">Camino bueno vs malo (fuego real)</span><br>
+        <span class="d">El entregable #128: dos cortafuegos, fuego real del motor y la
+          puntuación que decide. La sombra que protege la biodiversidad.</span>
+      </span>
+      <span class="badge ok">resultado</span>
+    </a>
+    <a class="op" href="terreno.html">
+      <span class="n">⛰</span>
+      <span>
+        <span class="t">El terreno real y el A* sobre él</span><br>
+        <span class="d">Las 4 capas reales (elevación, pendiente, biomasa, especies) y
+          el A* real respondiendo a la pendiente.</span>
+      </span>
+      <span class="badge ok">datos</span>
+    </a>
+    <a class="op" href="heightmap.html">
+      <span class="n">▤</span>
+      <span>
+        <span class="t">Del GeoTIFF crudo al heightmap 16-bit</span><br>
+        <span class="d">Cómo nace el relieve: limpiar el NoData (el «prisma gigante») y
+          exportar a 16 bits para evitar el escalonado. Antes/después.</span>
+      </span>
+      <span class="badge ok">datos</span>
+    </a>
+    <a class="op" href="metrica.html">
+      <span class="n">Σ</span>
+      <span>
+        <span class="t">La métrica compuesta</span><br>
+        <span class="d">Cómo cuatro factores y sus pesos se vuelven una puntuación
+          mayor=mejor; el análisis de sensibilidad.</span>
+      </span>
+      <span class="badge ok">evaluación</span>
+    </a>
+    <a class="op" href="sistema.html">
+      <span class="n">▦</span>
+      <span>
+        <span class="t">El sistema de un vistazo</span><br>
+        <span class="d">Pipeline, separación de capas, las 3 fases de uso y los dos
+          modos de física — diagramas para slides.</span>
+      </span>
+      <span class="badge ok">arquitectura</span>
+    </a>
+  </div>
+
+  <a href="como-funciona.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--acento2);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:1.5rem 0;">
+    <span style="font-family:var(--mono); font-size:.7rem; font-weight:700; letter-spacing:.08em;
+                 color:var(--acento2); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">cómo</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">¿Cómo está construido este testing-lab?</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Cómo Python prueba y
+        dibuja las funciones reales del motor sin arrancar el motor.</span>
+    </span>
+    <span style="margin-left:auto; color:var(--acento2); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <div class="ops">
+    <a class="op" href="buoyancy.html">
+      <span class="n">1</span>
+      <span>
+        <span class="t">Buoyancy (flotabilidad)</span><br>
+        <span class="d">El calor del gas se convierte en empuje vertical. O(n), memory-bound.</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+
+    <a class="op" href="viento.html">
+      <span class="n">2</span>
+      <span>
+        <span class="t">Viento</span><br>
+        <span class="d">Convención de ejes, filtro por estado, acumulación y el penacho inclinado (animado).</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+
+    <a class="op" href="presion.html">
+      <span class="n">3</span>
+      <span>
+        <span class="t">Presión e incompresibilidad</span><br>
+        <span class="d">Divergencia, proyección, el solver Jacobi por dentro (animado) y el capstone integrado.</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+
+    <a class="op" href="adveccion.html">
+      <span class="n">4</span>
+      <span>
+        <span class="t">Advección</span><br>
+        <span class="d">Backtrace semi-lagrangiano, difusión numérica y la corrección MacCormack (animado).</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+
+    <a class="op" href="reaccion.html">
+      <span class="n">5</span>
+      <span>
+        <span class="t">Reacción</span><br>
+        <span class="d">Ciclo de vida del fuego y el enfriamiento que da contención al cortafuegos (animado).</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+  </div>
+
+  <h2 style="font-size:1.25rem; margin:2.5rem 0 .3rem; border-bottom:1px solid var(--linea); padding-bottom:.4rem;">
+    Fundamentos matemáticos</h2>
+  <p style="color:var(--tinta-soft); margin:.4rem 0 1rem; font-size:.95rem;">
+    Las piezas de matemática que se repiten dentro de las operaciones, explicadas
+    aparte con sus propios GIFs.</p>
+
+  <div class="ops">
+    <a class="op" href="interpolacion.html">
+      <span class="n">∿</span>
+      <span>
+        <span class="t">Interpolación</span><br>
+        <span class="d">Leer valores entre celdas: media ponderada por cercanía (bilineal/trilineal, animado).</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+
+    <a class="op" href="operadores.html">
+      <span class="n">∂</span>
+      <span>
+        <span class="t">Operadores discretos</span><br>
+        <span class="d">Derivada, divergencia y laplaciano = restar y sumar vecinos (stencil animado).</span>
+      </span>
+      <span class="badge ok">documentada</span>
+    </a>
+  </div>
+
+  <a href="tick.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--ok);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:2rem 0 .5rem;">
+    <span style="font-family:var(--mono); font-size:.7rem; font-weight:700; letter-spacing:.08em;
+                 color:var(--ok); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">tick</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">El tick completo — todo junto</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Las cinco operaciones
+        en cadena: ve el testigo pasar de fase a fase en cada tick (animado).</span>
+    </span>
+    <span style="margin-left:auto; color:var(--ok); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <a href="astar.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--acento);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:.5rem 0;">
+    <span style="font-family:var(--mono); font-size:.78rem; font-weight:700; letter-spacing:.06em;
+                 color:var(--acento); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">A*</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">Trazado del cortafuegos (A*)</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Camino de menor coste
+        sobre el terreno: función de coste, heurística y A* vs Dijkstra (animado).</span>
+    </span>
+    <span style="margin-left:auto; color:var(--acento); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <a href="arquitectura.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--acento2);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:.5rem 0;">
+    <span style="font-family:var(--mono); font-size:.7rem; font-weight:700; letter-spacing:.06em;
+                 color:var(--acento2); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">arq</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">La API como orquestador (arquitectura)</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Godot ⇄ FastAPI ⇄ motor
+        C++: separación de capas, protocolo de líneas y el recorrido de una petición (animado).</span>
+    </span>
+    <span style="margin-left:auto; color:var(--acento2); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <a href="volumetrico.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--acento2);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:.5rem 0;">
+    <span style="font-family:var(--mono); font-size:.78rem; font-weight:700; letter-spacing:.06em;
+                 color:var(--acento2); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">K</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">Volumétrico (K=20) vs superficie (K=1)</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Por qué el fuego 3D
+        cuesta demasiado, cómo activarlo en la API y qué implica (comparador animado).</span>
+    </span>
+    <span style="margin-left:auto; color:var(--acento2); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <a href="tests.html" style="display:flex; align-items:center; gap:1.1rem;
+       text-decoration:none; color:inherit; background:var(--papel);
+       border:1px solid var(--linea); border-left:5px solid var(--aviso);
+       border-radius:12px; padding:1.05rem 1.35rem; margin:.5rem 0;">
+    <span style="font-family:var(--mono); font-size:.7rem; font-weight:700; letter-spacing:.06em;
+                 color:var(--aviso); text-transform:uppercase; writing-mode:vertical-rl;
+                 transform:rotate(180deg); align-self:stretch;">tests</span>
+    <span>
+      <span style="font-weight:700; font-size:1.1rem; color:var(--titulo);">La suite de tests del proyecto</span><br>
+      <span style="color:var(--tinta-soft); font-size:.93rem;">Todos los tests
+        explicados y clasificados por capas: motor C++, API y testing-lab.</span>
+    </span>
+    <span style="margin-left:auto; color:var(--aviso); font-weight:700; font-size:1.3rem;">→</span>
+  </a>
+
+  <footer class="pie">
+    Las imágenes se cargan desde <code>../out/</code> (regeneradas al correr cada
+    experimento; no se versionan). Abre estos <code>.html</code> directamente en el
+    navegador. Hardware de referencia: AMD&nbsp;Ryzen&nbsp;7&nbsp;5800H.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viento — `#75` — Endpoint `POST /viento` · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Viento — `#75` — Endpoint `POST /viento`</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="viento-74-comando-wind-y-fase-aplicarviento.html">Viento — 74 — Comando WIND y fase aplicarViento</a> · <a href="arquitectura-api.html">Arquitectura API</a> · <a href="cortafuegos-71-endpoints-api.html">Cortafuegos — 71 — Endpoints API</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Segunda pieza del milestone "Viento"</strong>: expone por HTTP el comando
+  <code>WIND</code> del motor introducido en
+  <a href="viento-74-comando-wind-y-fase-aplicarviento.html">#74</a>.</li>
+<li><strong><code>POST /viento</code> con payload <code>{vx: float, vz: float}</code></strong> en coordenadas
+  del <strong>mundo</strong> (X mundo, Z mundo, m/s). Sin rango impuesto — el usuario
+  decide la magnitud.</li>
+<li><strong>El swap a la convención interna del motor sigue blindado en C++</strong>:
+  la API ni siquiera ve <code>Vec3.y</code>. Godot recibe una superficie limpia con
+  los nombres <code>vx</code>/<code>vz</code>.</li>
+<li><strong>No toca el motor</strong>: sólo capa HTTP + wrapper. La API pública
+  existente (<code>/tick</code>, <code>/snapshot</code>, <code>/ignite</code>, <code>/reset</code>, <code>/firebreak</code>)
+  no cambia su contrato.</li>
+<li><strong>9 tests nuevos</strong> (3 wrapper + 6 endpoint). Cero regresiones.</li>
+</ul>
+<h2 id="diseno">Diseño</h2>
+<h3 id="apimotorpy-wrapper-nuevo"><code>api/motor.py</code> — wrapper nuevo</h3>
+<pre><code class="language-python">def set_viento(vx: float, vz: float) -&gt; None:
+    &quot;&quot;&quot;Fire-and-forget: el motor no responde.
+
+    vx y vz son las componentes en coordenadas del MUNDO. El swap a
+    la convención interna del motor (Vec3.y ↔ Z mundo) sucede dentro
+    de Simulacion::set_viento en C++.
+    &quot;&quot;&quot;
+    p = _proceso_activo()
+    p.stdin.write(f&quot;WIND {vx} {vz}\n&quot;)
+    p.stdin.flush()
+</code></pre>
+<p>Patrón idéntico a <code>ignite</code> — escribe una línea y vuelve. No lee
+respuesta porque el comando <code>WIND</code> del protocolo no emite nada (al
+contrario de <code>FIREBREAK_BATCH</code> que sí emite <code>FIREBREAK_DONE N</code>).</p>
+<h3 id="apimainpy-modelo-endpoint"><code>api/main.py</code> — modelo + endpoint</h3>
+<pre><code class="language-python">class Viento(BaseModel):
+    vx: float
+    vz: float
+
+@app.post(&quot;/viento&quot;)
+def viento(payload: Viento):
+    motor.set_viento(payload.vx, payload.vz)
+    return {&quot;status&quot;: &quot;ok&quot;}
+</code></pre>
+<p>Sin validación de rango: <code>vx</code> y <code>vz</code> son <code>float</code> libres. Si el usuario
+envía 1000 m/s, el solver lo aceptará; el resultado visual lo
+delatará (frente catapultado fuera del mapa). Esta es una decisión
+consciente — no queremos imponer un límite artificial que pueda no
+ser apropiado para todos los escenarios.</p>
+<h3 id="_campos_stats-actualizado"><code>_CAMPOS_STATS</code> actualizado</h3>
+<p><code>motor.py</code> mantiene una tupla de campos esperados en la línea STATS.
+Añadimos <code>viento</code> ahí (en la posición correcta, justo después de
+<code>ticks</code>) para que <code>motor.stats()</code> recoja el campo y <code>/stats</code> lo
+exponga sin cambios al endpoint.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="apitest_motorpy-3-tests-del-wrapper"><code>api/test_motor.py</code> — 3 tests del wrapper</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_set_viento_no_crashea</code></td>
+<td>Llamada al wrapper + motor sigue funcionando (<code>ignite + tick</code> después).</td>
+</tr>
+<tr>
+<td><code>test_set_viento_valores_extremos_no_crashean</code></td>
+<td>Magnitudes grandes, negativas, cero.</td>
+</tr>
+<tr>
+<td><code>test_set_viento_acumula_tiempo_en_profile</code></td>
+<td>Tras <code>set_viento + 2 ticks</code>, <code>motor.stats()["viento"] &gt; 0</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="apitest_endpointspy-6-tests-http"><code>api/test_endpoints.py</code> — 6 tests HTTP</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_viento_post_payload_valido</code></td>
+<td>Happy path: <code>{vx, vz}</code> válidos → 200 + <code>{status: "ok"}</code>.</td>
+</tr>
+<tr>
+<td><code>test_viento_post_valor_cero</code></td>
+<td><code>(0, 0)</code> válido (equivalente a no haber configurado).</td>
+</tr>
+<tr>
+<td><code>test_viento_post_valores_negativos_y_grandes</code></td>
+<td><code>(-25.5, 100.0)</code> aceptado.</td>
+</tr>
+<tr>
+<td><code>test_viento_post_payload_malformado_rechaza</code></td>
+<td>422 con falta de campo o no numérico.</td>
+</tr>
+<tr>
+<td><code>test_viento_post_efecto_en_stats</code></td>
+<td><code>/stats.viento &gt; 0</code> tras <code>POST /viento + ticks</code>.</td>
+</tr>
+<tr>
+<td><code>test_viento_post_funciona_sin_ignite_previo</code></td>
+<td>Orden libre: viento antes o después de ignite.</td>
+</tr>
+</tbody>
+</table>
+<p>Adicionalmente, <code>test_stats_sin_actividad_devuelve_ceros</code> se actualiza
+para incluir el campo <code>viento</code> en la lista esperada.</p>
+<h3 id="resultados">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#74)</th>
+<th style="text-align: right;">Después (#75)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">65 OK</td>
+<td style="text-align: right;"><strong>74 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">35 OK</td>
+<td style="text-align: right;">35 OK (sin tocar)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">93 OK</td>
+<td style="text-align: right;">93 OK (sin tocar)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>api/motor.py</code>:</li>
+<li>Wrapper <code>set_viento(vx, vz)</code>.</li>
+<li>Docstring del módulo actualizado con <code>WIND</code> y nueva línea <code>STATS</code>.</li>
+<li><code>_CAMPOS_STATS</code> incluye <code>"viento"</code>.</li>
+<li><code>api/main.py</code>:</li>
+<li>Modelo <code>Viento {vx, vz}</code>.</li>
+<li>Endpoint <code>POST /viento</code>.</li>
+<li><code>api/test_motor.py</code> — 3 tests nuevos.</li>
+<li><code>api/test_endpoints.py</code> — 6 tests nuevos + ajuste de lista de campos en stats.</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong>Sin rango duro en <code>vx</code>/<code>vz</code></strong>. Pydantic acepta cualquier <code>float</code>.
+   El usuario asume responsabilidad por valores absurdos — y el bbox
+   del frente delatará el problema visualmente. Imponer un rango
+   arbitrario (p.ej. ±50 m/s) sería inventar un límite sin
+   justificación física.</p>
+</li>
+<li>
+<p><strong>No expongo el getter <code>viento_motor()</code> del motor</strong>. Existe para
+   tests C++; la API no lo necesita. Si Godot quiere saber el viento
+   actual (para mostrarlo en HUD), se añadirá un endpoint <code>GET /viento</code>
+   cuando haga falta. Por ahora es un push de Godot al motor.</p>
+</li>
+<li>
+<p><strong><code>/stats</code> recoge automáticamente el campo <code>viento</code></strong>. La cabecera
+   del motor ya incluye <code>viento=ns</code>; el parser de <code>motor.parse_stats</code>
+   pasa cualquier campo conocido (en la tupla <code>_CAMPOS_STATS</code>), así
+   que basta con añadir <code>"viento"</code> a la tupla — no hay endpoint nuevo,
+   no hay cambio en <code>/stats</code> por código.</p>
+</li>
+<li>
+<p><strong>Fire-and-forget igual que <code>ignite</code></strong>. El motor no responde a
+   <code>WIND</code>. Esto es coherente con un comando de set (no de consulta).
+   La verificación externa pasa por <code>STATS.viento &gt; 0</code> tras un tick.</p>
+</li>
+<li>
+<p><strong>No verifico la magnitud del swap desde la API</strong>. Los tests de la
+   convención (<code>viento_X</code> y <code>viento_Z</code> en C++) ya cubren ese
+   comportamiento. Desde la API basta con verificar que el endpoint
+   recibe y propaga al motor; verificar que el motor empuja en el eje
+   correcto es responsabilidad de los tests C++ (donde se observa
+   <code>velocity.x/y/z</code> directamente).</p>
+</li>
+</ol>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="75-entrega-los-criterios-de-aceptacion-al-100">75 entrega los criterios de aceptación al 100 %:</h1>
+<ul>
+<li>[x] <code>pytest -q</code> pasa los 65 previos + 9 nuevos.</li>
+<li>[x] <code>POST /viento</code> con payload válido devuelve 200.</li>
+<li>[x] Payload sin <code>vx</code> o sin <code>vz</code> → 422.</li>
+<li>[x] Tipo incorrecto (string en <code>vx</code>) → 422.</li>
+<li>[x] Tras <code>POST /viento + ticks</code>, <code>/stats.viento &gt; 0</code>.</li>
+<li>[x] API pública existente sin cambios.</li>
+</ul>
+<p><strong>Siguiente</strong>: <a href="viento-76-e2e-y-validacion-narrativa.html">Viento — #76</a>
+(cuando exista). Tests E2E que demuestran asimetría del bbox de BURNING
+en función de la dirección del viento, y script <code>viento_validacion.py</code>
+con tres escenarios. El test crítico de la convención <code>.y → Z mundo</code>
+se cierra ahí end-to-end.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

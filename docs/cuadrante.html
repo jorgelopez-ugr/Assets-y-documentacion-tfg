@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cuadrante.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>cuadrante.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> · <a href="simulacion.html">simulacion</a></p>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Matiz (revisado 2026-06-27)</div><div class="callout-body"><p>La estructura está al día. Un detalle: <code>fuel_coefficient</code> ya <strong>no</strong> es
+"<code>1.0</code> dentro del DEM": se deriva por celda de la clasificación hiperespectral
+(valores en <code>{0, 0.4, 0.5, 0.55, 0.9, 0.95}</code>); el <code>0.0</code> sigue marcando celdas
+fuera del DEM, suelo desnudo y caminos. Ver <a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a>.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/cuadrante.h</code>
+<strong>Usado en:</strong> <code>world.h</code> (carga), <code>simulacion.h</code> (gestión activa)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Define las dos estructuras del rediseño que sustituyen al <code>Grid</code> monolítico
+anterior:</p>
+<ul>
+<li><strong><code>SubGrid</code></strong>: el grid 3D fijo de un cuadrante, con la misma interfaz que
+  el <code>Grid</code> antiguo (<code>sizeX/sizeY/sizeZ</code>, <code>get</code>, <code>isValid</code>) para que las
+  cabeceras de física no necesiten cambios.</li>
+<li><strong><code>Cuadrante</code></strong>: la unidad de procesamiento. Contiene los datos estáticos
+  del terreno (origen, vecinos, pendiente, fuel) y un <code>SubGrid</code> dinámico que
+  solo se aloca al activarse.</li>
+</ul>
+<p>También define:</p>
+<ul>
+<li><strong><code>EstadoCuadrante</code></strong>: <code>INACTIVO</code>, <code>ACTIVO</code>, <code>HALO</code>.</li>
+<li>Las constantes <code>CELDAS_QUAD_X = 50</code>, <code>CELDAS_QUAD_Z = 50</code>, <code>NIVELES_Y = 20</code>
+  y los derivados <code>CELDAS_SUPERFICIE = 2.500</code>, <code>CELDAS_VOLUMEN = 50.000</code>.</li>
+</ul>
+<hr>
+<h2 id="subgrid-el-grid-3d-fijo"><code>SubGrid</code> — el grid 3D fijo</h2>
+<pre><code class="language-cpp">struct SubGrid {
+    static constexpr int sizeX = CELDAS_QUAD_X;   // 50  — world X horizontal
+    static constexpr int sizeY = CELDAS_QUAD_Z;   // 50  — world Z horizontal
+    static constexpr int sizeZ = NIVELES_Y;       // 20  — vertical
+    static constexpr std::size_t total = sizeX * sizeY * sizeZ;  // 50.000
+
+    std::vector&lt;Celda&gt; cells;                     // vacío hasta inicializar()
+
+    void inicializar();                           // cells.assign(total, Celda{})
+    bool inicializado() const;                    // cells.size() == total
+
+    Celda&amp; get(int x, int y, int z);
+    bool isValid(int x, int y, int z) const;
+};
+</code></pre>
+<h3 id="por-que-empieza-vacio">Por qué empieza vacío</h3>
+<p>896 cuadrantes × 50.000 celdas × 36 bytes ≈ <strong>1.6 GB</strong> si se alocara todo
+por defecto. Inaceptable.</p>
+<p><code>SubGrid::cells</code> empieza como <code>std::vector&lt;Celda&gt;</code> vacío. Solo se aloca
+(<code>inicializar()</code>) cuando el cuadrante pasa a <code>ACTIVO</code>. En <code>evaluar_desactivacion</code>
+se vuelve a vaciar (<code>cells.clear()</code>) para liberar memoria.</p>
+<h3 id="indexado-lineal">Indexado lineal</h3>
+<pre><code class="language-cpp">index(x, y, z) = x + sizeX * (y + sizeY * z);
+</code></pre>
+<p>X es el eje que varía más rápido — los bucles del motor iteran
+<code>for z → for y → for x</code> para acceso secuencial a memoria.</p>
+<h3 id="por-que-z-es-el-eje-vertical">Por qué <code>Z</code> es el eje vertical</h3>
+<p>Las cabeceras heredadas (<code>buoyancy</code>, <code>presion</code>, <code>adveccion</code>) ya estaban
+escritas asumiendo <code>velocity.z</code> como dirección vertical. Mantener esa
+convención permite que las físicas no necesiten ningún cambio en el
+rediseño. La incongruencia con la nomenclatura del documento de diseño
+(<code>niveles_y = 20</code>) es deuda visible y aceptada.</p>
+<hr>
+<h2 id="estadocuadrante"><code>EstadoCuadrante</code></h2>
+<pre><code class="language-cpp">enum class EstadoCuadrante {
+    INACTIVO,   // SubGrid no alocado, cuadrante no se procesa
+    ACTIVO,     // física completa cada tick
+    HALO        // procesado solo en bordes (uso futuro)
+};
+</code></pre>
+<p>Transiciones gestionadas por <code>Simulacion</code>:</p>
+<pre><code>INACTIVO  ──(activar / evaluar_activacion)──▶  ACTIVO
+ACTIVO    ──(evaluar_desactivacion)──────────▶  INACTIVO
+</code></pre>
+<p><code>HALO</code> no se usa todavía. Está reservado para una futura optimización donde
+solo se procese una franja de celdas borde de los cuadrantes vecinos a un
+ACTIVO, sin alocar el SubGrid completo.</p>
+<hr>
+<h2 id="cuadrante-la-unidad-de-procesamiento"><code>Cuadrante</code> — la unidad de procesamiento</h2>
+<pre><code class="language-cpp">struct Cuadrante {
+    uint32_t id = 0;                          // 0 .. 895
+    Vec2     origen;                          // (qx*50, qz*50) en metros
+    float    pendiente_media = 0.0f;
+    Vec2     pendiente_dir;                   // gradiente medio del DEM (XZ)
+    std::vector&lt;uint32_t&gt; vecinos;            // ids adyacentes (Moore)
+
+    EstadoCuadrante estado = EstadoCuadrante::INACTIVO;
+
+    // Datos estáticos cargados de world.dat
+    std::array&lt;uint8_t, CELDAS_SUPERFICIE&gt; y_superficie{};
+    std::array&lt;float,   CELDAS_SUPERFICIE&gt; fuel_coefficient{};
+
+    // Datos dinámicos
+    SubGrid grid;
+};
+</code></pre>
+<h3 id="datos-estaticos">Datos estáticos</h3>
+<p>Cargados una sola vez de <code>world.dat</code> en <code>WorldData::cargar</code> y nunca más
+modificados:</p>
+<ul>
+<li><code>id</code>: índice global, <code>qz * cuadrantes_x + qx</code>.</li>
+<li><code>origen</code>: coordenada mundial del origen del cuadrante en metros.</li>
+<li><code>vecinos</code>: ids de cuadrantes adyacentes según vecindad <strong>Moore</strong> (8 para
+  interior, 5 para borde, 3 para esquina).</li>
+<li><code>pendiente_media</code> y <code>pendiente_dir</code>: calculadas con <code>np.gradient</code> sobre el
+  bloque 50×50 del DEM.</li>
+<li><code>y_superficie[idx]</code>: nivel vertical (0..19) de la celda de superficie en
+  la columna mundial <code>(cx, cz)</code>, indexado por <code>idx = cz * 50 + cx</code>.</li>
+<li><code>fuel_coefficient[idx]</code>: combustibilidad de esa celda. <code>1.0</code> dentro del
+  DEM, <code>0.0</code> en celdas fuera del DEM (cuadrantes de borde recortados).</li>
+</ul>
+<h3 id="datos-dinamicos">Datos dinámicos</h3>
+<ul>
+<li><code>estado</code>: el <code>EstadoCuadrante</code> actual.</li>
+<li><code>grid</code>: el <code>SubGrid</code> con las celdas físicas del tick actual. Vacío
+  mientras el cuadrante está <code>INACTIVO</code>.</li>
+</ul>
+<p><code>Simulacion::activar(id)</code> aloca el grid, marca FUEL en la celda de
+superficie de cada columna y deja el resto como AIR (<code>Celda</code> por defecto).</p>
+<hr>
+<h2 id="ejemplo-encontrar-la-celda-de-superficie-en-cx-cz">Ejemplo: encontrar la celda de superficie en (cx, cz)</h2>
+<pre><code class="language-cpp">const Cuadrante&amp; c = world.cuadrantes[id];
+int cx = 25, cz = 25;
+int idx = cz * CELDAS_QUAD_X + cx;
+int v_sup = c.y_superficie[idx];           // nivel vertical de la superficie
+float fc  = c.fuel_coefficient[idx];       // combustibilidad
+
+// Tras activar:
+Celda&amp; celda_superficie = c.grid.get(cx, cz, v_sup);
+// celda_superficie.state = FUEL
+// celda_superficie.fuel_coefficient = fc
+</code></pre>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

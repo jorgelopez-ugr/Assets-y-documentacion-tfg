@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#61` — Benchmark reproducible y baseline · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#61` — Benchmark reproducible y baseline</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a></p>
+<h2 id="por-que-esta-issue-existe">Por qué esta issue existe</h2>
+<p>El milestone se mide en latencias antes/después por PR. Antes de tocar nada del
+solver hace falta un instrumento que dé números <strong>comparables</strong>: si el ruido
+entre dos ejecuciones consecutivas es del 30%, ningún PR puede demostrar
+mejora menor del 30%. Y necesitamos un formato que se pueda adjuntar al PR
+sin tener que copiar logs a mano.</p>
+<h2 id="que-se-ha-cambiado">Qué se ha cambiado</h2>
+<h3 id="apiheadless_benchpy"><code>api/headless_bench.py</code></h3>
+<ol>
+<li>Flag nuevo <code>--csv path.csv</code> que vuelca una fila por tick con:</li>
+</ol>
+<p><code>tick,latency_ms,n_diffs,burning,smoke</code></p>
+<p><code>burning</code> y <code>smoke</code> se rellenan sólo en los ticks de snapshot (cada 20 por
+   defecto). En el resto van vacíos para no inflar el coste del bench
+   pidiendo <code>/snapshot</code> cada tick.</p>
+<ol start="2">
+<li>
+<p>Docstring del módulo documenta:
+   - <strong>Determinismo:</strong> el motor no usa RNG; el terreno (<code>world.dat</code>) fija el
+     fuel y la ignición fija el origen. Por eso <strong>no hay flag <code>--seed</code></strong>.
+   - <strong>Comando estándar de comparación</strong> que hay que ejecutar en cada PR del
+     milestone:</p>
+<p><code>bash
+ python3 api/headless_bench.py --ticks 200 --csv bench_&lt;rama&gt;.csv</code></p>
+</li>
+<li>
+<p>La lógica de escritura CSV vive en una función pura <code>escribir_csv(filas,
+   destino)</code> para que sea testeable sin tener la API arrancada. Acepta path o
+   file-like (StringIO).</p>
+</li>
+</ol>
+<h3 id="apitest_headless_benchpy-nuevo"><code>api/test_headless_bench.py</code> (nuevo)</h3>
+<p>Cuatro tests sobre <code>escribir_csv</code>:
+- cabecera y orden de columnas fijos,
+- fila completa serializada correctamente,
+- <code>None</code> en <code>burning</code>/<code>smoke</code> se convierte en cadena vacía,
+- acepta path como destino.</p>
+<p>El bucle principal del bench requiere la API arrancada y queda fuera de pytest.</p>
+<h2 id="verificacion-del-criterio-de-aceptacion">Verificación del criterio de aceptación</h2>
+<p>Criterio: <strong>dos ejecuciones consecutivas con la misma ignición producen
+latencias cuya diferencia media &lt; 5%</strong>.</p>
+<p>Ejecutado dos veces con <code>--ticks 80 --csv /tmp/run{1,2}.csv</code> (80 ticks
+cubren ya parte de la fase de crecimiento exponencial — pico de 1410 BURNING):</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>Run 1</th>
+<th>Run 2</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tiempo total</td>
+<td>10.08 s</td>
+<td>9.97 s</td>
+</tr>
+<tr>
+<td>Latencia media <code>/tick</code></td>
+<td>124.19 ms</td>
+<td>122.89 ms</td>
+</tr>
+<tr>
+<td><code>n_diffs</code> por tick</td>
+<td>idéntico en los 80 ticks</td>
+<td>idéntico</td>
+</tr>
+<tr>
+<td>BURNING/SMOKE en cada snapshot</td>
+<td>idénticos</td>
+<td>idénticos</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Diferencia relativa de medias: 1.06% — bajo el umbral del 5%.</strong></p>
+<p>La simulación es 100% determinista a nivel de estado (verificado: todas las
+filas de <code>n_diffs</code>, <code>burning</code> y <code>smoke</code> coinciden bit a bit entre runs). El
+único ruido es el de scheduling/cachés del SO sobre los tiempos de pared, y
+queda muy por debajo del 5%.</p>
+<h2 id="baseline-registrado">Baseline registrado</h2>
+<p>Hardware: Ryzen 7 5800H, motor monohilo, sin Godot conectado.</p>
+<p>Para 80 ticks, ignición central:
+- Latencia media <code>/tick</code>: ~123 ms
+- p50: ~70 ms · p95: ~400 ms · max: ~430 ms
+- Pico en tick 80: 1410 BURNING / 10183 SMOKE</p>
+<p>Para los hitos del milestone (de bench previo del 9-may-2026):
+- Tick 100 (~2651 BURNING): <strong>726 ms</strong>
+- Tick 140 (~25593 BURNING): <strong>4.1 s</strong>
+- Tick 160 (~52390 BURNING): <strong>10.0 s</strong></p>
+<p>Estos son los números a batir.</p>
+<h2 id="tests">Tests</h2>
+<ul>
+<li><code>cd api &amp;&amp; .venv/bin/python -m pytest -q</code> → 34 passed (de los cuales 4
+  nuevos para <code>escribir_csv</code>).</li>
+<li>Suite del motor (<code>engine/test_*.sh</code> + <code>test_buoyancy</code>, <code>test_reaccion</code>,
+  <code>test_serializar</code>) → todo pasa.</li>
+</ul>
+<p>Cero regresiones.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

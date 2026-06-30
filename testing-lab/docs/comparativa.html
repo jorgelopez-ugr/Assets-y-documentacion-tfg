@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camino bueno vs malo — fuego real y puntuación</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · resultados · <a href="index.html">índice</a></p>
+    <h1>Camino bueno vs malo</h1>
+    <p class="sub">El <strong>entregable científico</strong> del TFG: dos cortafuegos
+      de la <strong>misma área</strong>, el mismo foco y el <strong>fuego real</strong>
+      del motor, puntuados con la <strong>métrica compuesta real</strong>. Se ve por
+      qué la <em>orientación</em> de un cortafuegos lo es todo.</p>
+  </header>
+
+  <p>Un cortafuegos no es bueno por existir: es bueno por <strong>dónde y cómo</strong>
+    se pone. Aquí se enciende un foco junto a una mancha de <strong>especies
+    protegidas reales</strong> (pino, encina, quejigo), en zona de combustible alto, y
+    se comparan tres respuestas: <strong>no hacer nada</strong>, un cortafuegos
+    <strong>longitudinal</strong> (paralelo al avance del fuego) y uno
+    <strong>transversal</strong> (perpendicular). Los tres despejan <em>la misma
+    cantidad de terreno</em> — la única diferencia es la orientación.</p>
+
+  <!-- ═══════════════════════════ LOS MAPAS ════════════════════════════════ -->
+  <h2>El incendio, lado a lado</h2>
+  <figure>
+    <img src="../out/caminos_mapas.png" alt="Tres escenarios de incendio sobre el terreno real: sin cortafuegos, longitudinal y transversal">
+    <figcaption>
+      Fuego real propagado <b>45 ticks</b> en modo superficie sobre el relieve real.
+      <b>Sin cortafuegos</b> el fuego arrasa la zona y quema las 619 especies.
+      El <b>longitudinal</b> es <b>flanqueado</b>: el frente lo rodea por arriba y por
+      abajo y reconverge sobre las especies. El <b>transversal</b> proyecta una
+      <b>sombra</b> —la franja blanca sin quemar— que protege casi toda la mancha
+      (519 de 619 salvadas) y recorta el área quemada un tercio.
+    </figcaption>
+  </figure>
+  <p>Es la misma física del documento de validación (<em>el frente de superficie es
+    isótropo, crece como un círculo</em>), pero ahora sobre el terreno de verdad y con
+    una zona valiosa concreta que proteger. La franja transversal cubre el sector
+    angular por el que el fuego se acerca a las especies; la longitudinal no.</p>
+
+  <!-- ═══════════════════════════ LA PUNTUACIÓN ════════════════════════════ -->
+  <h2>Por qué gana el transversal — la métrica lo dice</h2>
+  <figure>
+    <img src="../out/caminos_puntuacion.png" alt="Puntuación compuesta de cada escenario, desglosada por factor, y tabla de factores crudos">
+    <figcaption>
+      La <a href="metrica.html">métrica compuesta</a> (mayor = mejor) puntúa cada
+      camino. El transversal gana en <b>eficacia</b> (salva 10&nbsp;692 celdas frente
+      a la baseline) y en <b>protección</b> (deja casi intacta la zona valiosa); el
+      longitudinal apenas mejora el «no hacer nada». La tabla de la derecha son los
+      factores crudos que devuelve el motor real.
+    </figcaption>
+  </figure>
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra</span>
+    A igual coste (celdas despejadas), <strong>la orientación respecto al fuego es
+    determinante</strong>: transversal&nbsp;0.444 ≫ longitudinal&nbsp;0.331 &gt; no
+    hacer nada&nbsp;0.257. Esto justifica que el A* del trazado prefiera caminos
+    transversales al avance esperado, y conecta la teoría (validación de ancho y
+    orientación) con la evaluación cuantitativa (la métrica). Todo con datos y motor
+    reales — no una maqueta.
+  </div>
+
+  <div class="nota">
+    <strong>Reproducible y verificado:</strong> el cálculo lo hace
+    <code>probes/probe_caminos.py</code> con el motor real (venv de la API) y lo
+    grafica <code>experiments/comparativa_caminos.py</code> (venv del lab). El test
+    <code>tests/test_comparativa_caminos.py</code> fija como invariante el orden
+    <code>transversal &gt; longitudinal &gt; sin</code>: si el motor o la métrica
+    cambiaran y lo rompieran, falla.
+    <pre><code>testing-lab/.venv/bin/python testing-lab/experiments/comparativa_caminos.py</code></pre>
+  </div>
+
+  <footer class="pie">
+    En una frase: <strong>el mismo material de cortafuegos protege el 84&nbsp;% de la
+    biodiversidad si está bien orientado y casi nada si está mal orientado.</strong>
+    Vuelve al <a href="index.html">índice</a>, mira el
+    <a href="terreno.html">terreno real y el A*</a> o
+    <a href="metrica.html">cómo se construye la puntuación</a>.
+  </footer>
+
+</div>
+</body>
+</html>

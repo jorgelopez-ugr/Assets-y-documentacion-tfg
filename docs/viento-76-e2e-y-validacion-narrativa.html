@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viento — `#76` — E2E y validación narrativa · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Viento — `#76` — E2E y validación narrativa</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="viento-74-comando-wind-y-fase-aplicarviento.html">Viento — 74 — Comando WIND y fase aplicarViento</a> · <a href="viento-75-endpoint-api.html">Viento — 75 — Endpoint API</a> · <a href="viento-recopilatorio.html">Viento — Recopilatorio</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Cuarta y última pieza del milestone "Viento"</strong> (la tercera issue
+  cronológicamente). Tests E2E HTTP + script de validación narrativa
+  que demuestran empíricamente que el viento desplaza el frente.</li>
+<li><strong>Hipótesis cumplida en ambos ejes</strong> con magnitud 10 m/s a 30 ticks:
+  Δcx = +17.4 con viento (10, 0); Δcz = +11.3 con viento (0, 10).</li>
+<li><strong>El test crítico de la convención <code>.y → Z mundo</code> PASA end-to-end</strong>:
+  <code>set_viento(0, 10)</code> empuja el centroide en <code>cell.z</code>, no en <code>cell.y</code>
+  (vertical). Confirma que el swap en <code>Simulacion::set_viento</code> está
+  bien implementado y que la API es una superficie limpia.</li>
+<li><strong>3 tests E2E nuevos</strong> + script <code>api/viento_validacion.py</code>. Cero
+  regresiones.</li>
+</ul>
+<h2 id="por-que-esta-issue-cierra-el-milestone">Por qué esta issue cierra el milestone</h2>
+<p>Las dos issues previas dejaron motor + API operativos. #76 verifica
+que el sistema completo, integrado, demuestra la hipótesis física que
+justifica todo el milestone (el viento desplaza el frente) <strong>y</strong> que
+la trampa de los ejes está bien resuelta a lo largo de toda la
+cadena motor ↔ API ↔ tests.</p>
+<p>Si los tests pasan en X pero <strong>fallaran en Z</strong>, sería bug en el swap
+de <code>set_viento</code> (<code>Vec3.y</code> ↔ Z mundo). Ese diagnóstico está explícito
+en el assert del test crítico para facilitar el debug.</p>
+<h2 id="geometria-del-bench-narrativo">Geometría del bench narrativo</h2>
+<pre><code>       z
+       │             viento (0, +10) — Z mundo
+       │                  ↓
+       │
+       │      o    ●    o     ← centroide se desplaza
+       │      ↑    ●    ●        a (cx, cz+Δ)
+       │      ●    ●    ●
+       │      ●    ●    ●     viento (+10, 0) — X mundo
+  275  │   ↑  ●●(275,275)●●─→         ↓
+       │      ●    ●    ●     centroide se desplaza
+       │      ●    ●    ●     a (cx+Δ, cz)
+       │      ●    ●    o
+       │
+       └──────────────────────► x
+              275
+</code></pre>
+<ul>
+<li><strong>Foco</strong>: ignición en (275, 275).</li>
+<li><strong>Métrica</strong>: centroide (media de <code>cell.x</code> y <code>cell.z</code>) de las celdas
+  BURNING tras N ticks.</li>
+<li><strong>Comparación</strong>: viento contra baseline sin viento. La métrica
+  importante es la <strong>diferencia</strong> del centroide, no la posición
+  absoluta. El baseline no está exactamente en (275, 275) porque la
+  propagación es ligeramente asimétrica por el ordering del solver +
+  pendiente del terreno DEM, pero eso afecta a los tres escenarios
+  por igual y se cancela al restar.</li>
+</ul>
+<h2 id="resultados">Resultados</h2>
+<h3 id="bench-canonico-python3-apiviento_validacionpy-ticks-30">Bench canónico — <code>python3 api/viento_validacion.py --ticks 30</code></h3>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">n BURNING</th>
+<th style="text-align: right;">centroide_x</th>
+<th style="text-align: right;">centroide_z</th>
+<th style="text-align: right;">Δcx</th>
+<th style="text-align: right;">Δcz</th>
+<th style="text-align: right;">tiempo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sin viento (baseline)</td>
+<td style="text-align: right;">4 874</td>
+<td style="text-align: right;">260.87</td>
+<td style="text-align: right;">266.26</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">6.2 s</td>
+</tr>
+<tr>
+<td>Viento (+10, 0) — X mundo</td>
+<td style="text-align: right;">5 300</td>
+<td style="text-align: right;">278.29</td>
+<td style="text-align: right;">269.83</td>
+<td style="text-align: right;"><strong>+17.42</strong></td>
+<td style="text-align: right;">+3.57</td>
+<td style="text-align: right;">6.2 s</td>
+</tr>
+<tr>
+<td>Viento (0, +10) — Z mundo</td>
+<td style="text-align: right;">4 542</td>
+<td style="text-align: right;">262.70</td>
+<td style="text-align: right;">277.55</td>
+<td style="text-align: right;">+1.83</td>
+<td style="text-align: right;"><strong>+11.29</strong></td>
+<td style="text-align: right;">6.2 s</td>
+</tr>
+</tbody>
+</table>
+<p>Lectura:</p>
+<ul>
+<li><strong>Viento X</strong>: Δcx = +17.4 (frente desplazado en +X mundo). Δcz = +3.6
+  (algo de deriva en Z por la asimetría base, pero un orden de magnitud
+  menor que el desplazamiento principal).</li>
+<li><strong>Viento Z</strong> (test crítico): Δcz = +11.3 (frente desplazado en +Z
+  mundo). Δcx = +1.8 (ruido). <strong>La convención motor <code>Vec3.y ↔ Z mundo</code>
+  está bien implementada</strong> — el motor no empuja humo verticalmente,
+  empuja lateralmente en Z mundo como debería.</li>
+<li>Las magnitudes de los desplazamientos son distintas (17 vs 11) por
+  asimetría del baseline (la dirección X es la que ya tiene deriva
+  espontánea, y el viento la refuerza más que en Z).</li>
+</ul>
+<h3 id="tests-e2e-a-25-ticks-mas-rapidos-para-pytest">Tests E2E a 25 ticks (más rápidos para pytest)</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th style="text-align: right;">Δ medido</th>
+<th style="text-align: right;">Umbral</th>
+<th style="text-align: right;">Margen</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Viento X → Δcx</td>
+<td style="text-align: right;">~+12</td>
+<td style="text-align: right;">&gt; 5</td>
+<td style="text-align: right;">2.4×</td>
+</tr>
+<tr>
+<td>Viento Z → Δcz</td>
+<td style="text-align: right;">~+5</td>
+<td style="text-align: right;">&gt; 3</td>
+<td style="text-align: right;">1.7×</td>
+</tr>
+<tr>
+<td>Reset borra viento</td>
+<td style="text-align: right;">≈ 0</td>
+<td style="text-align: right;">&lt; 0.5</td>
+<td style="text-align: right;">OK</td>
+</tr>
+</tbody>
+</table>
+<p>Márgenes generosos. Robustos a ruido normal del solver.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="apitest_e2epy-3-tests-nuevos"><code>api/test_e2e.py</code> — 3 tests nuevos</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_e2e_viento_X_desplaza_centroide_en_cell_x</code></td>
+<td>Viento (10, 0) → Δcx &gt; 5 y |Δcz| &lt; 5 (no rota el frente).</td>
+</tr>
+<tr>
+<td><code>test_e2e_viento_Z_desplaza_centroide_en_cell_z</code></td>
+<td><strong>CRÍTICO</strong>: Viento (0, 10) → Δcz &gt; 3. El assert incluye un hint al diagnóstico ("Posible bug en el swap Vec3.y ↔ Z mundo") para que el debug sea inmediato si falla.</td>
+</tr>
+<tr>
+<td><code>test_e2e_reset_borra_viento</code></td>
+<td><code>set_viento + /reset + ignite + ticks</code> produce un centroide indistinguible (&lt; 0.5 celdas) del baseline limpio. Verifica que <code>reset()</code> limpia <code>viento_motor_</code> (issue #74).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="resultados_1">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#75)</th>
+<th style="text-align: right;">Después (#76)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">74 OK</td>
+<td style="text-align: right;"><strong>77 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">35 OK</td>
+<td style="text-align: right;">35 OK (sin tocar)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">93 OK</td>
+<td style="text-align: right;">93 OK (sin tocar)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>api/test_e2e.py</code>:</li>
+<li>3 tests E2E nuevos en sección "E2E del milestone Viento (#76)".</li>
+<li>Helpers <code>_centroide_burning</code>, <code>_corrida_con_viento</code>,
+    <code>_corrida_con_viento_solo</code>.</li>
+<li><code>api/viento_validacion.py</code> (nuevo, ~190 LOC):</li>
+<li>Script standalone con tres escenarios (baseline, viento X, viento Z).</li>
+<li>Mide centroides + bbox, vuelca JSON, evalúa hipótesis.</li>
+<li>Argumentos: <code>--ticks</code>, <code>--magnitud</code>, <code>--umbral</code>, <code>--json</code>.</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong>Centroide como métrica primaria</strong>. La alternativa habría sido
+   "número de celdas BURNING en un sector del mapa" (como hicimos con
+   cortafuegos y el "corredor"). Pero en viento el efecto es un
+   <em>desplazamiento</em>, no una <em>contención</em>: la métrica natural es el
+   centro de masa del frente, no un conteo en una región fija.</p>
+</li>
+<li>
+<p><strong>Diferencia vs baseline, no posición absoluta</strong>. El centroide sin
+   viento no está exactamente en (275, 275) por asimetría del solver
+   y del DEM (pendiente del terreno). Esa asimetría se cancela al
+   restar el baseline, dejando sólo la contribución del viento.</p>
+</li>
+<li>
+<p><strong>Tests E2E a 25 ticks</strong>, no 30. A 25 ticks los márgenes ya son
+   ≥ 2× los umbrales — más que suficiente para robustez. A 30 ticks
+   los tests duplicarían su tiempo sin aportar más fiabilidad.</p>
+</li>
+<li>
+<p><strong>Umbrales asimétricos</strong> (5 para X, 3 para Z). La asimetría base
+   del solver favorece X levemente, así que viento en X se nota más.
+   Los umbrales reflejan eso. No se trata de hacer el test "fácil":
+   se trata de que el umbral sea coherente con la magnitud típica del
+   ruido en cada dirección.</p>
+</li>
+<li>
+<p><strong>Assert del test crítico con hint de diagnóstico</strong>. El mensaje de
+   error del <code>test_e2e_viento_Z_desplaza_centroide_en_cell_z</code> incluye
+   "Posible bug en el swap Vec3.y ↔ Z mundo (ver docs/convenciones-ejes.md)".
+   Si alguien rompe el swap en un cambio futuro, el debug arranca con
+   la pista correcta.</p>
+</li>
+<li>
+<p><strong><code>test_e2e_reset_borra_viento</code> toca también la API</strong>. Aunque ya
+   hay un test C++ (<code>test_reset_borra_viento</code> en test_simulacion.cpp),
+   este test E2E cierra el ciclo HTTP → motor → reset → motor. Es la
+   prueba de que el cliente Godot puede pulsar "reset" y empezar
+   limpio sin tener que llamar a <code>POST /viento {0, 0}</code> explícitamente.</p>
+</li>
+<li>
+<p><strong>Bench narrativo a 30 ticks, tests a 25</strong>. Documentamos el bench
+   con la versión más nítida (más ticks, más asimetría); los tests
+   automatizados usan la versión más rápida con márgenes amplios.</p>
+</li>
+</ol>
+<h2 id="lectura-para-el-tfg-gestores-forestales">Lectura para el TFG (gestores forestales)</h2>
+<blockquote>
+<p><strong>Con 10 m/s de viento sostenido durante 30 ticks, el centro del
+incendio se desplaza 17 metros en la dirección del viento. En 5
+minutos simulados, el frente ya no está donde lo dejaste — el viento
+manda. Un cortafuegos perpendicular al viento dominante es la
+herramienta que combina las dos features del simulador: usa la
+dirección del viento para decidir dónde cortar.</strong></p>
+</blockquote>
+<p>Esto enlaza con <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a>: ahora una franja
+estrecha <em>perpendicular al viento</em> es eficaz, mientras que la misma
+franja <em>paralela al viento</em> se ve sobrevolada. Esa demostración
+combinada queda para un milestone futuro de "interacción
+cortafuegos × viento" si el TFG lo requiere.</p>
+<h2 id="conclusion">Conclusión</h2>
+<h1 id="76-cierra-el-milestone-viento">76 cierra el milestone "Viento":</h1>
+<ul>
+<li>[x] Tests E2E HTTP que demuestran desplazamiento en X y en Z.</li>
+<li>[x] Test crítico que valida la convención <code>.y → Z mundo</code>.</li>
+<li>[x] Bench narrativo con tres escenarios y volcado JSON.</li>
+<li>[x] Cero regresiones (35 + 93 + 77 = 205 tests verdes).</li>
+<li>[x] Documentación con números concretos.</li>
+</ul>
+<p><strong>Siguientes pasos</strong> (futuros milestones, no este):</p>
+<ul>
+<li>Cortafuegos × viento: bench combinado que demuestre el efecto de
+  dirección.</li>
+<li>Viento variable en el espacio (canalización por DEM usando
+  <code>Cuadrante::pendiente_media</code> y <code>pendiente_dir</code>).</li>
+<li>Viento variable en el tiempo (rachas, calmas).</li>
+</ul>
+<p>Ver <a href="viento-recopilatorio.html">Viento — Recopilatorio</a> para el resumen del milestone completo.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>`evaluar_desactivacion` pisaba los halos del vecino · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>`evaluar_desactivacion` pisaba los halos del vecino</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="simulacion.html">simulacion</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h2 id="sintoma">Síntoma</h2>
+<p>En el test E2E del rediseño (<code>api/test_e2e.py</code>), encender una celda en el
+borde derecho del cuadrante <code>(5, 5)</code> no propagaba el fuego al cuadrante
+<code>(6, 5)</code> aunque corriéramos 20 ticks. El test fallaba con:</p>
+<pre><code>AssertionError: el fuego NO cruzó al cuadrante (6,5) en 20 ticks.
+distribución por cuadrante: 5_5=2394, 6_5=0, total=2394
+</code></pre>
+<p>Curiosamente, sí se observaba que <strong>9 cuadrantes</strong> (todos los vecinos
+Moore del 5,5 más él mismo) acababan activos según <code>TICK_DONE 450000</code>,
+pero ninguno de ellos tenía celdas BURNING — solo FUEL.</p>
+<hr>
+<h2 id="analisis">Análisis</h2>
+<p>El flujo de un tick original era:</p>
+<pre><code>1. física por cuadrante (incluye sostener_burning)
+2. propagar_halos
+3. evaluar_activacion       ← activa vecinos con calor en frontera
+4. evaluar_desactivacion    ← libera cuadrantes sin BURNING
+</code></pre>
+<p>Tick a tick:</p>
+<ul>
+<li>
+<p><strong>Tick 1:</strong> A activo. <code>evaluar_activacion</code> ve <code>temp = 800 °C</code> en el
+  borde de A → activa a B (y a los demás vecinos por simetría). B nace
+  con FUEL/AIR pero <strong>sin BURNING todavía</strong>.</p>
+</li>
+<li>
+<p><strong>Tick 2:</strong> Física en A y B. <code>propagar_halos</code> copia A's right column ↔
+  B's left column, promediando temperaturas: A's <code>(49,25,sup)</code> con
+  <code>T=800</code> y B's <code>(0,25,sup)</code> con <code>T=0</code> quedan ambas a <code>T=400</code>. Bien.</p>
+</li>
+</ul>
+<p>Después: <code>evaluar_desactivacion</code> recorre activos. <strong>B no tiene BURNING
+  → desactiva B</strong>. Al desactivar, <code>c.grid.cells.clear()</code> libera el
+  SubGrid. <strong>Los halos recién recibidos se pierden.</strong></p>
+<p>Después: <code>evaluar_activacion</code> vuelve a ver el borde de A caliente
+  (también promediado a 400, todavía &gt; 100 → reactiva B. Pero <code>activar</code>
+  llama a <code>inicializar()</code> que hace <code>cells.assign(total, Celda{})</code> —
+  reset completo. B vuelve a nacer con FUEL/AIR fríos.</p>
+<p><strong>El ciclo activar → desactivar → activar pisa los halos.</strong> El calor
+  nunca llega a los FUEL de B y nunca ignita.</p>
+<hr>
+<h2 id="arreglo">Arreglo</h2>
+<p>Dos cambios en <code>engine/simulacion.h</code>:</p>
+<h3 id="1-cambiar-el-orden-desactivar-antes-de-activar">1. Cambiar el orden: desactivar antes de activar</h3>
+<pre><code class="language-cpp">// Antes:
+evaluar_activacion();
+evaluar_desactivacion();
+
+// Después:
+evaluar_desactivacion();
+evaluar_activacion();
+</code></pre>
+<p>Así, un cuadrante recién activado en este tick no es candidato a
+desactivación hasta el siguiente. Se le da un tick de gracia para
+recibir halos sin perderlos.</p>
+<h3 id="2-considerar-actividad-la-temperatura-no-solo-burning">2. Considerar "actividad" la temperatura, no solo BURNING</h3>
+<pre><code class="language-cpp">void evaluar_desactivacion() {
+    for (uint32_t id : activos_) {
+        bool actividad = false;
+        for (const Celda&amp; cell : c.grid.cells) {
+            if (cell.state == EstadoCelda::BURNING ||
+                cell.temperature &gt; UMBRAL_ACTIVACION) {  // ← clave
+                actividad = true; break;
+            }
+        }
+        if (!actividad) /* desactivar */;
+    }
+}
+</code></pre>
+<p>Esto es la pieza esencial. Un cuadrante recién activado con halos calientes
+(<code>temp &gt; 100 °C</code>) es "activo" aunque no tenga BURNING todavía. Cuando la
+reacción del siguiente tick lo ignite, se convertirá en BURNING. Si no lo
+ignita (calor insuficiente), pasará a desactivarse en algún tick futuro
+naturalmente.</p>
+<hr>
+<h2 id="como-lo-cazo-el-e2e">Cómo lo cazó el E2E</h2>
+<p>El test E2E reveló el bug porque era el primer test que probaba la
+<strong>propagación entre cuadrantes</strong> end-to-end. Los tests unitarios de
+<code>simulacion.h</code> validaban activación, desactivación, halos por separado y
+todos pasaban — pero su composición tenía esta interacción patológica.</p>
+<p>Lección: los tests unitarios no detectan errores de orden global. Hace
+falta al menos un E2E que ejecute el sistema completo durante varios
+ticks para validar la coherencia temporal.</p>
+<hr>
+<h2 id="lecciones-generales">Lecciones generales</h2>
+<ol>
+<li><strong>El orden de las fases de un tick no es libre</strong>. Si un paso modifica
+   estado que otro consume, el orden tiene que reflejar la dependencia.</li>
+<li><strong>Liberar memoria es destructivo</strong>. <code>cells.clear()</code> no es reversible:
+   los halos copiados allí se pierden. Toda decisión de liberar debe
+   verificar que no quede información útil.</li>
+<li><strong>"Actividad" es más que BURNING</strong>. En un sistema con halos, una
+   celda caliente sin combustible aún propaga calor a sus vecinos. La
+   métrica de "está vivo" tiene que cubrir ambos casos.</li>
+</ol>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>build_world.py — leyendo las capas hiperespectrales de especies · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Tooling de datos</p>
+    <h1>build_world.py — leyendo las capas hiperespectrales de especies</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a> · <a href="int16-overflow-build-world.html">int16-overflow-build-world</a></p>
+<p><strong>Milestone:</strong> Integración Godot-Motor (Fase 2 #81/#82)
+<strong>Archivos:</strong> <code>tools/build_world.py</code> · <code>docs/references/color-*.png</code></p>
+<hr>
+<h2 id="contexto">Contexto</h2>
+<p>Hasta este milestone, <code>tools/build_world.py</code> generaba <code>data/world.dat</code>
+con <code>fuel_coefficient = 1.0</code> uniforme para todas las celdas dentro
+del DEM. La Fase 2 cambia eso: el <code>fuel_coefficient</code> ahora se deriva
+de las 7 capas hiperespectrales que el usuario tiene escaneadas
+del terreno real (Puerto La Mata).</p>
+<hr>
+<h2 id="las-7-capas-de-entrada">Las 7 capas de entrada</h2>
+<p>En <code>docs/references/</code> hay siete PNG, todas de 1058×539 px, cada una
+con la ortofoto del terreno escaneado más una capa pintada con un
+color específico para una categoría / especie:</p>
+<table>
+<thead>
+<tr>
+<th>Archivo</th>
+<th>Color RGB</th>
+<th>Categoría</th>
+<th>fuel asignado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>color-vegetacion-alta.png</code></td>
+<td>(0, 0, 255)</td>
+<td>Vegetación alta agregada</td>
+<td>0.90</td>
+</tr>
+<tr>
+<td><code>color-vegetacion-baja.png</code></td>
+<td>(255, 0, 0)</td>
+<td>Matorral / sotobosque</td>
+<td>0.55</td>
+</tr>
+<tr>
+<td><code>color-pinus-helepensis.png</code></td>
+<td>(0, 255, 255)</td>
+<td>Pinus halepensis (pirofítico)</td>
+<td>0.95</td>
+</tr>
+<tr>
+<td><code>color-encina.png</code></td>
+<td>(127, 0, 255)</td>
+<td>Quercus ilex (resistente fuego)</td>
+<td>0.40</td>
+</tr>
+<tr>
+<td><code>color-quejigo.png</code></td>
+<td>(255, 128, 0)</td>
+<td>Quercus faginea (caducifolio)</td>
+<td>0.50</td>
+</tr>
+<tr>
+<td><code>color-terreno.png</code></td>
+<td>(0, 255, 0)</td>
+<td>Suelo desnudo</td>
+<td>0.00</td>
+</tr>
+<tr>
+<td><code>color-camino.png</code></td>
+<td>(255, 0, 255)</td>
+<td>Camino (cortafuegos natural)</td>
+<td>0.00</td>
+</tr>
+</tbody>
+</table>
+<p>Los colores se obtuvieron empíricamente con un script que cuenta
+los píxeles más saturados de cada PNG. Verificado contra la
+clasificación visible en <code>etiquetas-especies.png</code>.</p>
+<h3 id="especies-invisibles-del-catalogo">Especies "invisibles" del catálogo</h3>
+<p>Hay otras especies del catálogo <code>docs/references/Caracteristicas de
+especies.txt</code> (Berberis hispanica, Echinospartum boissieri, Erinacea
+anthyllis, Stipa tenacissima) cuyo color en la clasificación
+hiperespectral es despreciable (&lt; 100 píxeles, lost in noise). El
+usuario aceptó dejarlas fuera del mapeo:</p>
+<blockquote>
+<p>"Hay muchas especies que la verdad que el color es invisible yo
+ supongo que porque desde el espacio es irrisorio, las que son
+ demasiado poco que ni se ven no te preocupes porque no es culpa
+ nuestra."</p>
+</blockquote>
+<hr>
+<h2 id="el-criterio-fuel-por-especie">El criterio fuel por especie</h2>
+<p>Sin tabla numérica en el catálogo, los valores asignados se derivan
+de:</p>
+<ul>
+<li><strong>Pinus halepensis (0.95)</strong>: la propuesta del TFG lo identifica
+  como especie pirofítica, "favorece incendios". Resinoso,
+  combustible alto.</li>
+<li><strong>Vegetación alta agregada (0.90)</strong>: categoría compuesta (pinos,
+  encinas densas, otras). Valor alto razonable como "hay biomasa".</li>
+<li><strong>Vegetación baja / matorral (0.55)</strong>: menor densidad de biomasa
+  que la alta, pero combustible significativo (encina rastrera,
+  romero, brezo).</li>
+<li><strong>Quejigo (0.50)</strong>: caducifolio, combustibilidad media.</li>
+<li><strong>Encina (0.40)</strong>: perenne, hojas duras, <strong>resistente al fuego</strong>.
+  Citada en la propuesta como contrapunto biológico de los pinos.</li>
+<li><strong>Suelo desnudo (0.00)</strong> y <strong>camino (0.00)</strong>: nada que arda;
+  actúan como cortafuegos naturales.</li>
+</ul>
+<p>Si en una iteración posterior se obtiene una tabla numérica de
+combustibilidad por especie de la literatura, basta con cambiar
+los valores en el dict <code>MAPEO_ESPECIES</code> en <code>build_world.py</code>.</p>
+<hr>
+<h2 id="algoritmo-de-combinacion">Algoritmo de combinación</h2>
+<pre><code class="language-python">MAPEO_ESPECIES: list[tuple[str, tuple[int,int,int], float]] = [
+    (&quot;color-terreno.png&quot;,          (0,   255, 0  ), 0.00),
+    (&quot;color-vegetacion-alta.png&quot;,  (0,   0,   255), 0.90),
+    (&quot;color-vegetacion-baja.png&quot;,  (255, 0,   0  ), 0.55),
+    (&quot;color-pinus-helepensis.png&quot;, (0,   255, 255), 0.95),
+    (&quot;color-encina.png&quot;,           (127, 0,   255), 0.40),
+    (&quot;color-quejigo.png&quot;,          (255, 128, 0  ), 0.50),
+    (&quot;color-camino.png&quot;,           (255, 0,   255), 0.00),  # último = máxima precedencia
+]
+COLOR_TOLERANCIA = 10
+FUEL_DEFAULT = 0.0
+
+def cargar_fuel_map(width, depth):
+    fuel = np.full((depth, width), FUEL_DEFAULT, dtype=np.float32)
+    for archivo, color_esperado, valor_fuel in MAPEO_ESPECIES:
+        img = Image.open(REFERENCES / archivo).convert(&quot;RGB&quot;)
+        if img.size != (width, depth):
+            img = img.resize((width, depth), Image.NEAREST)
+        pixels = np.asarray(img, dtype=np.int32)   # ¡int32!
+        diff = pixels - np.array(color_esperado, dtype=np.int32)
+        dist2 = diff[..., 0]**2 + diff[..., 1]**2 + diff[..., 2]**2
+        mascara = dist2 &lt;= COLOR_TOLERANCIA**2
+        fuel[mascara] = valor_fuel
+    return fuel
+</code></pre>
+<h3 id="orden-de-aplicacion-con-precedencia">Orden de aplicación con precedencia</h3>
+<p>Las capas se procesan en orden y la última gana en píxeles
+solapados. Esto sirve para distinguir:</p>
+<ul>
+<li><strong>Agregada antes que específica</strong>: vegetación-alta (azul) cubre
+  toda la zona de bosque. Luego pinus, encina y quejigo se aplican
+  encima de píxeles que ya están como vegetación-alta y los
+  <strong>sobreescriben</strong> con su valor específico.</li>
+<li><strong>Camino al final</strong>: máxima precedencia, porque un camino que
+  cruza una zona de pinus debe verse como camino (fuel 0).</li>
+</ul>
+<h3 id="matching-por-distancia-euclidea-rgb-con-tolerancia-10">Matching por distancia euclídea RGB con tolerancia 10</h3>
+<p>Es necesario para absorber el <strong>antialiasing</strong> de la clasificación
+hiperespectral (píxeles <code>(1, 1, 253)</code> siguen siendo "azul"). 10
+unidades es suficiente para esto y demasiado bajo para colisionar
+con tonos naturales de la ortofoto (verdes de árbol real, marrones
+de tierra).</p>
+<h3 id="alineacion-con-homografia-sift-139">Alineación con homografía SIFT (#139)</h3>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Actualizado en #139</div><div class="callout-body"><p>Antes se <strong>estiraba</strong> la imagen hiperespectral al DEM sin preservar
+ratio (1058×539 → 1598×1393), una distorsión asumida que descuadraba la
+textura. <strong>Ahora se alinea con visión por computador</strong>: <code>tools/alinear_
+hiperespectral.py</code> detecta la <strong>silueta del escaneo</strong> y estima una
+<strong>homografía (ORB/SIFT + RANSAC)</strong> entre las ortofotos para cuadrar las
+capturas sobre el DEM. <code>build_world.py</code> consume esa textura alineada (no
+el estirado naive) para derivar el <code>fuel</code>. Ver el issue #139.</p></div></div>
+<p>La fidelidad geográfica plena seguiría necesitando un GeoTIFF
+georeferenciado (CRS EPSG:32630), pero la homografía cuadra las capturas
+mucho mejor que el estirado.</p>
+<hr>
+<h2 id="distribucion-final-en-worlddat">Distribución final en <code>world.dat</code></h2>
+<p>Tras correr <code>python build_world.py</code>:</p>
+<pre><code>[FUEL] color-terreno.png            fuel=0.00  matched  335294 (15.1%)
+[FUEL] color-vegetacion-alta.png    fuel=0.90  matched 1150146 (51.7%)
+[FUEL] color-vegetacion-baja.png    fuel=0.55  matched   19631 ( 0.9%)
+[FUEL] color-pinus-helepensis.png   fuel=0.95  matched     813 ( 0.0%)
+[FUEL] color-encina.png             fuel=0.40  matched    2936 ( 0.1%)
+[FUEL] color-quejigo.png            fuel=0.50  matched    8494 ( 0.4%)
+[FUEL] color-camino.png             fuel=0.00  matched    8006 ( 0.4%)
+[FUEL] resumen: 47.4% fuel=0 (no arde), 51.2% fuel≥0.8
+</code></pre>
+<p>Lectura:</p>
+<ul>
+<li><strong>47.4 % no arde</strong> (suelo desnudo + caminos + no clasificado).</li>
+<li><strong>51.2 % arde rápido</strong> (vegetación alta + Pinus).</li>
+<li><strong>~1.5 % arde con menor velocidad</strong> (matorral + quejigo + encina).</li>
+</ul>
+<p>Coherente con la imagen visible: el centro del mapa es bosque denso
+clasificado (azul mayoritario, con manchas naranjas de quejigo) y
+los bordes son terreno expuesto.</p>
+<hr>
+<h2 id="impacto-en-tests">Impacto en tests</h2>
+<p>Los tests asumían <code>fuel=1.0</code> uniforme en el cuadrante (5, 5) — coords
+(275, 275). Con Fase 2 esa celda tiene <code>fuel=0</code>. Tres acciones:</p>
+<ol>
+<li>
+<p><strong><code>test_world_loader.cpp</code></strong>: sustituido el test "todo es 1.0"
+   por <code>fuel_en_rango</code>, <code>fuel_no_uniforme</code> y <code>fuel_valores_canon</code>
+   (este último verifica que cada celda pertenece al conjunto
+   <code>{0.0, 0.4, 0.5, 0.55, 0.9, 0.95}</code>).</p>
+</li>
+<li>
+<p><strong><code>test_simulacion.cpp</code> + <code>test_e2e.py</code></strong>: coordenadas migradas
+   al <strong>cuadrante (16, 2)</strong> — coords (825, 125) — donde hay una
+   zona de vegetación alta densa de 100×100 celdas con fuel
+   uniforme 0.90, lo que permite propagación lateral como en el
+   snapshot anterior.</p>
+</li>
+<li>
+<p><strong><code>test_simulacion.cpp::test_determinismo_numerico_adveccion</code></strong>:
+   snapshot recalculado para el cuadrante (16, 2). La simulación
+   sigue siendo bit-determinista; los nuevos valores son la nueva
+   referencia.</p>
+</li>
+</ol>
+<hr>
+<h2 id="bug-significativo-del-camino">Bug significativo del camino</h2>
+<p>Ver <a href="int16-overflow-build-world.html">int16-overflow-build-world</a>. El primer intento usaba
+<code>dtype=np.int16</code> por costumbre de imágenes; los cuadrados
+overflowaban y la máscara matcheaba ~99 % del mapa. Cambio a
+<code>int32</code>. Lección: para imágenes con NumPy, <strong>int32 o float32 por
+defecto</strong>.</p>
+<hr>
+<h2 id="trabajo-futuro">Trabajo futuro</h2>
+<ol>
+<li><strong>GeoTIFF georeferenciado</strong> para no estirar la imagen al DEM.
+   Requiere bibliotecas GIS (<code>rasterio</code>, <code>gdal</code>) — la propuesta del
+   TFG ya las menciona.</li>
+<li><strong>Tabla numérica de combustibilidad por especie</strong> desde la
+   literatura forestal — sustituiría los valores actuales (que son
+   "mejor esfuerzo" basados en el catálogo de tamaños + la
+   propuesta).</li>
+<li><strong>Más especies del catálogo</strong> si en algún momento se obtienen
+   capas adicionales (Berberis, Echinospartum, Erinacea, Stipa).</li>
+</ol>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

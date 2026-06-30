@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 6 — Profiling con perf: dónde va realmente el tiempo · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>MVP 6 — Profiling con perf: dónde va realmente el tiempo</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="adveccion.html">adveccion</a> · <a href="presion.html">presion</a> · <a href="mvp5-cuello-botella-memoria.html">mvp5-cuello-botella-memoria</a></p>
+<h2 id="por-que-este-documento">Por qué este documento</h2>
+<p>MVP 5 cumplió su criterio (436 ms con N=10) pero la hipótesis original era falsa:
+eliminar las copias de <code>SubGrid</code> solo dio un ~3 % de mejora. La lección: no
+asumir, medir. Esta issue (#51) abre el MVP 6 con la regla de oro
+<strong>"no tocar física hasta tener datos"</strong> y entrega una medida real del tick.</p>
+<hr>
+<h2 id="hipotesis-previas-ordenadas-por-probabilidad">Hipótesis previas, ordenadas por probabilidad</h2>
+<p>Según <code>.userhub/design-decissions/design-mvp6-cuello-botella.md</code>:</p>
+<ol>
+<li><code>std::function</code> en <code>adveccion.h</code> — 450 000 llamadas indirectas por tick por cuadrante.</li>
+<li>Cache misses por layout AoS de <code>Celda</code> — struct ~80 B, mal aprovechamiento de línea de caché.</li>
+<li>Solver Jacobi en <code>presion.h</code> — N iteraciones × 50 000 celdas.</li>
+</ol>
+<hr>
+<h2 id="herramienta-por-que-perf-y-no-callgrind">Herramienta: por qué perf y no callgrind</h2>
+<table>
+<thead>
+<tr>
+<th>Criterio</th>
+<th><code>perf</code></th>
+<th><code>valgrind --callgrind</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sobrecarga</td>
+<td>~1–5 % (muestreo estadístico)</td>
+<td><strong>~50×</strong> (instrumentación)</td>
+</tr>
+<tr>
+<td>Mide tiempo real</td>
+<td>Sí</td>
+<td>No (cuenta instrucciones simuladas)</td>
+</tr>
+<tr>
+<td>Mide cache misses <strong>reales</strong></td>
+<td>Sí (<code>-e cache-misses</code>)</td>
+<td>Solo simula caché</td>
+</tr>
+<tr>
+<td>Distorsiona patrón de caché</td>
+<td>No</td>
+<td>Sí</td>
+</tr>
+</tbody>
+</table>
+<p>La hipótesis 2 (cache misses por AoS) <strong>solo es comprobable honestamente con
+perf</strong>, porque callgrind simula la caché en lugar de medir la real.</p>
+<p>Requisito: <code>kernel.perf_event_paranoid &lt;= 2</code> (Ubuntu 24.04 trae 4 por defecto).
+Se baja con <code>sudo sysctl kernel.perf_event_paranoid=2</code> durante la sesión.</p>
+<hr>
+<h2 id="como-se-reproduce">Cómo se reproduce</h2>
+<pre><code class="language-bash"># 1) Compilar binario con símbolos (no estriparlo)
+make -C engine motor_debug
+# o:  bash engine/build_motor_debug.sh
+
+# 2) Ejecutar el profiling (genera artefactos en tools/profile-output/)
+bash tools/profile.sh
+</code></pre>
+<p>Input determinista (<code>engine/perf_input.txt</code>): <code>IGNITE 799 696</code> + 30 × <code>TICK</code> + <code>QUIT</code>.
+30 ticks dan ~1,6 s de CPU, suficientes para que el cuadrante centrado en (799,696)
+se llene y arranque la propagación a vecinos. El muestreo de perf con 6 764 muestras
+es estadísticamente fiable.</p>
+<p>Flags de compilación (<code>engine/build_motor_debug.sh</code>):
+<code>-std=c++17 -O2 -g -fno-omit-frame-pointer</code>. <code>-O2</code> mantiene el realismo de release;
+<code>-g</code> y <code>-fno-omit-frame-pointer</code> permiten resolver nombres y call-graphs sin DWARF.</p>
+<hr>
+<h2 id="resultados-perf-stat">Resultados — <code>perf stat</code></h2>
+<pre><code>6 623 995 677    cycles:u
+21 333 412 310   instructions:u    # 3,22 insn/cycle
+   19 658 586    cache-misses:u    # 2,01 % of all cache refs
+  980 069 030    cache-references:u
+    9 780 252    branch-misses:u   # 0,31 % of all branches
+3 119 305 302    branch-instructions:u
+
+1,629 731 905 s elapsed    (1,609 s user, 0,015 s sys)
+</code></pre>
+<p>Lectura:</p>
+<ul>
+<li><strong>IPC = 3,22</strong>. Excelente: el pico teórico de las CPU x86-64 modernas ronda 4.
+  La CPU <strong>no está esperando memoria</strong> — está ejecutando casi a velocidad de pico.</li>
+<li><strong>Cache miss rate = 2,01 %</strong>. Muy bajo. Lo esperado en código memory-bound mal
+  estructurado serían cifras del 10-30 %.</li>
+<li><strong>Branch miss rate = 0,31 %</strong>. Irrelevante.</li>
+</ul>
+<hr>
+<h2 id="resultados-top-funciones-perf-report-no-children">Resultados — top funciones (<code>perf report --no-children</code>)</h2>
+<pre><code>41,22 %  semiLagrangiano(SubGrid, SubGrid, ..., std::function&lt;float(Celda)&gt;)
+38,57 %  resolverPresion(SubGrid&amp;, SubGrid&amp;, SubGrid&amp;, int)
+ 4,01 %  std::_Function_handler&lt;...,advectar::lambda#1&gt;::_M_invoke
+ 3,83 %  std::_Function_handler&lt;...,advectar::lambda#2&gt;::_M_invoke
+ 3,68 %  std::_Function_handler&lt;...,advectar::lambda#3&gt;::_M_invoke
+ 1,55 %  advectar(SubGrid&amp;, SubGrid&amp;, SubGrid&amp;, float)
+ 1,20 %  main
+ 0,72 %  WorldData::cargar(...)
+ 0,65 %  std::basic_filebuf&lt;&gt;::xsgetn
+ 0,64 %  std::istream::read
+</code></pre>
+<p>Las tres <code>_Function_handler::_M_invoke</code> son el código que <code>std::function</code> genera
+para invocar las tres lambdas accesoras de <code>temperature</code>, <code>density</code>, <code>reaction</code>
+en <code>advectar</code>. Son <strong>el coste puro del despacho indirecto</strong>.</p>
+<h3 id="reagrupacion-por-subsistema">Reagrupación por subsistema</h3>
+<table>
+<thead>
+<tr>
+<th>Subsistema</th>
+<th>% tiempo</th>
+<th>Función dominante</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Advección</strong> (incluye despacho <code>std::function</code>)</td>
+<td><strong>52,74 %</strong></td>
+<td><code>semiLagrangiano</code> + 3 × <code>_Function_handler</code></td>
+</tr>
+<tr>
+<td><strong>Presión</strong></td>
+<td><strong>38,57 %</strong></td>
+<td><code>resolverPresion</code> (Jacobi)</td>
+</tr>
+<tr>
+<td>Carga de mundo + I/O</td>
+<td>~3,2 %</td>
+<td><code>WorldData::cargar</code>, stdlib streams</td>
+</tr>
+<tr>
+<td>Resto</td>
+<td>~5,5 %</td>
+<td><code>advectar</code> envoltorio, <code>main</code>, vmlinux</td>
+</tr>
+</tbody>
+</table>
+<p>Buoyancy y reacción no aparecen en el top — su coste por tick es despreciable
+frente a advección y presión.</p>
+<hr>
+<h2 id="como-se-interpretan-los-numeros">Cómo se interpretan los números</h2>
+<p>Antes de juzgar las hipótesis conviene fijar la regla con la que se leen los
+contadores. No es obvio sin contexto.</p>
+<h3 id="ipc-instructions-per-cycle">IPC (instructions per cycle)</h3>
+<p>Es la métrica primaria de "salud" de la CPU. La CPU tiene varios pipelines y
+puede emitir hasta ~4 instrucciones por ciclo (depende del modelo). Lecturas
+típicas:</p>
+<table>
+<thead>
+<tr>
+<th>IPC observado</th>
+<th>Lectura</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt; 0,5</td>
+<td>la CPU pasa la mayor parte del tiempo esperando memoria (memory-bound)</td>
+</tr>
+<tr>
+<td>~1,0</td>
+<td>uso normal de código con ramas y dependencias</td>
+</tr>
+<tr>
+<td>~2,0</td>
+<td>código bien optimizado, hot loop</td>
+</tr>
+<tr>
+<td><strong>≥ 3,0</strong></td>
+<td><strong>CPU casi a tope ejecutando instrucciones reales — no espera memoria</strong></td>
+</tr>
+</tbody>
+</table>
+<p><code>IPC = 3,22</code> significa que la CPU <strong>no está bloqueada por la jerarquía de
+memoria</strong>. Cualquier hipótesis basada en "se pierde tiempo esperando RAM"
+choca de frente contra este número.</p>
+<h3 id="cache-miss-rate">Cache miss rate</h3>
+<p>Calculado como <code>cache-misses / cache-references</code>. La aritmética del profile:</p>
+<pre><code>cache-misses    =     19 658 586
+cache-references =   980 069 030
+ratio            = 19 658 586 / 980 069 030 = 2,01 %
+</code></pre>
+<p>Referencias típicas:</p>
+<ul>
+<li>Código memory-bound mal estructurado: 10–30 %.</li>
+<li>Código razonable: 3–8 %.</li>
+<li><strong>Código con buenos patrones de acceso (stride regular, prefetcher amigable): &lt; 3 %.</strong></li>
+</ul>
+<p>El 2,01 % observado no es solo "bajo": cae directamente en la franja en la que
+<strong>el prefetcher hardware está absorbiendo los accesos</strong> y la AoS no penaliza.</p>
+<hr>
+<h2 id="conclusiones">Conclusiones</h2>
+<h3 id="hipotesis-1-stdfunction-en-adveccion-confirmada">✅ Hipótesis 1 (std::function en advección) — <strong>CONFIRMADA</strong></h3>
+<p><strong>Evidencia 1 — la función dominante del profile lleva <code>std::function</code> en su firma.</strong>
+La línea más cara del binario (41,22 % del tiempo) es:</p>
+<pre><code>semiLagrangiano(SubGrid const&amp;, SubGrid const&amp;, int, int, int, float,
+                std::function&lt;float (Celda const&amp;)&gt;)
+</code></pre>
+<p>Que la firma aparezca tal cual en el símbolo demuestra dos cosas: (a) el compilador
+no la inlineó, y (b) cada acceso a un campo (<code>temperature</code>, <code>density</code>, <code>reaction</code>)
+pasa por el despacho indirecto del <code>std::function</code>.</p>
+<p><strong>Evidencia 2 — los <code>_Function_handler::_M_invoke</code> aparecen como funciones reales</strong>
+con un 11,52 % combinado:</p>
+<pre><code>4,01 %  std::_Function_handler&lt;...,advectar::lambda#1&gt;::_M_invoke
+3,83 %  std::_Function_handler&lt;...,advectar::lambda#2&gt;::_M_invoke
+3,68 %  std::_Function_handler&lt;...,advectar::lambda#3&gt;::_M_invoke
+</code></pre>
+<p>Esto <strong>no debería existir</strong> si las lambdas estuvieran inlineadas: serían un
+puñado de instrucciones (<code>return c.temperature;</code>) absorbidas dentro del bucle de
+advección. Que aparezcan como tres símbolos visibles, con porcentaje propio, es
+la huella exacta del despacho indirecto que <code>std::function</code> impone.</p>
+<p><strong>Cuantificación</strong>. Por cuadrante activo, advección hace:</p>
+<pre><code>50 × 50 × 20 celdas × 3 campos (T, density, reaction)
+                    × 3 pasos MacCormack (adelante, atrás, corrección)
+= 1 350 000 invocaciones por cuadrante por tick
+</code></pre>
+<p>Con N=10 cuadrantes activos eso son ~13,5 M de llamadas indirectas por tick.
+Si cada despacho cuesta ~10 ns de overhead, son ~135 ms perdidos solo en el
+mecanismo de <code>std::function</code>, sin contar el cuerpo real del cálculo.</p>
+<p><strong>Cómo se calcula el 52,74 %</strong>. No es la suma simple de las filas:</p>
+<pre><code>semiLagrangiano (incluye su propio cuerpo + las llamadas a las lambdas)  41,22 %
++ 3 × _Function_handler::_M_invoke (despacho que el inliner no absorbió) 11,52 %
++ advectar (envoltorio que prepara los buffers y llama a semiLagrangiano)  1,55 %
+─────────────────────────────────────────────────────────────────────────────
+Subsistema &quot;advección con std::function&quot;                                ~54,3 %
+</code></pre>
+<p>(En el resumen anterior se anotó 52,74 % omitiendo <code>advectar</code> para ser
+conservadores. La estimación honesta es del orden 52–54 %.)</p>
+<p>Pasar a templates <strong>no eliminará todo este 54 %</strong> — el cuerpo de <code>semiLagrangiano</code>
+seguirá ejecutándose. Pero quita los tres <code>_M_invoke</code> (11,52 % limpio) y permite
+al compilador inlinear getters triviales como <code>[](const Celda&amp; c){return c.temperature;}</code>,
+lo que abre vectorización SIMD y reorderings que ahora mismo están bloqueados.</p>
+<h3 id="hipotesis-2-cache-misses-por-layout-aos-invalidada">❌ Hipótesis 2 (cache misses por layout AoS) — <strong>INVALIDADA</strong></h3>
+<p><strong>Evidencia 1 — cache miss rate del 2,01 %</strong>. Si la hipótesis fuera correcta
+(struct de 80 B en línea de caché de 64 B → un acceso a <code>temperature</code> ya rompe
+la línea, y el resto del struct se carga "para nada"), el rate esperado sería
+≥ 10 %. Lo observado está cinco veces por debajo del mínimo previsto.</p>
+<p><strong>Evidencia 2 — IPC de 3,22</strong>. Una CPU bloqueada esperando líneas de caché tiene
+IPC bajo (típicamente &lt; 1). Aquí la CPU está ejecutando casi a velocidad de pico,
+señal de que <strong>los datos están llegando a tiempo</strong>.</p>
+<p><strong>Por qué la intuición original era razonable pero falla</strong>. La teoría
+("80 B / 64 B = aprovecho 80 %, malgasto 20 %") asume accesos aleatorios. El
+código real itera <code>SubGrid</code> con stride fijo en bucles anidados muy regulares.
+El <strong>prefetcher hardware de la CPU detecta el patrón y precarga las líneas
+siguientes antes de que se necesiten</strong>. La penalización teórica desaparece en
+la práctica.</p>
+<p><strong>Implicación operativa</strong>. La issue #53 (layout SoA) se cierra como <strong>"no
+necesaria"</strong> — su beneficio teórico no se materializa con estos patrones de
+acceso, y el coste (refactor invasivo de 6 ficheros) no se justifica con un 2 %
+de cache miss. Cierre con comentario que enlace a este documento.</p>
+<h3 id="hipotesis-nueva-resolverpresion-es-el-otro-3857">⚠️ Hipótesis nueva — <code>resolverPresion</code> es el otro 38,57 %</h3>
+<p>Esta función <strong>no estaba destacada en las hipótesis previas</strong>. El diseño la
+mencionaba como "hipótesis 3" sin enfatizarla, asumiendo que el coste estaría
+dominado por advección. El profiler la sitúa <strong>a la altura de la primera</strong>:</p>
+<pre><code>41,22 %  semiLagrangiano (advección)
+38,57 %  resolverPresion (Jacobi)
+</code></pre>
+<p><code>resolverPresion</code> ejecuta un solver Jacobi sobre el SubGrid de presión. Cada
+iteración recorre las 50 000 celdas del cuadrante leyendo 6 vecinos por celda
+(±x, ±y, ±z). Con N iteraciones por tick (N≈20–30 hoy), son ~1 M de operaciones
+de lectura/escritura por cuadrante por tick.</p>
+<p><strong>Por qué importa para el criterio del MVP 6</strong>. El criterio es <strong>tick &lt; 400 ms
+con N=20</strong>. Si la issue #52 (templates) recupera el 11,5 % de los <code>_M_invoke</code> y
+otro tanto por inlining, podemos esperar reducir advección de ~54 % a ~30–35 %.
+Pero la presión seguiría ocupando ~38 % sin tocar. Solo con #52 <strong>no se alcanza
+el criterio</strong> — las cuentas no salen.</p>
+<p>Hace falta una <strong>issue 6.D</strong> (a redactar tras cerrar #52, con datos nuevos)
+sobre <code>resolverPresion</code>. Líneas a explorar:</p>
+<ul>
+<li>Reducir el número de iteraciones de Jacobi y medir el impacto visual en Godot.</li>
+<li>Reordenar el bucle (¿el stride de acceso es óptimo?, ¿hay misses ocultos en presión específicamente que el agregado no ve?).</li>
+<li>Evaluar Gauss-Seidel rojo-negro (cuesta más por iteración pero converge en la mitad de pasos).</li>
+<li>Sólo si lo anterior no basta: paralelizar con OpenMP (sale del alcance del MVP 6, sería un MVP propio).</li>
+</ul>
+<hr>
+<h2 id="plan-inmediato-escrito-antes-de-cerrar-52">Plan inmediato (escrito antes de cerrar #52)</h2>
+<ol>
+<li><strong>Issue #52</strong> (eliminar <code>std::function</code>): se ataca ya. La firma exacta a
+   modificar es <code>semiLagrangiano(...)</code> en <code>engine/adveccion.h</code>. Convertir a template
+   y pasar las lambdas como tipos concretos. Validar con la suite (88 tests) y
+   con <code>bench_tick.py</code>.</li>
+<li><strong>Issue #53</strong> (SoA): se cierra como <strong>no necesaria</strong> con enlace a este doc.</li>
+<li><strong>Nueva issue (6.D)</strong>: optimización de <code>resolverPresion</code>. Diseño tras cerrar #52.</li>
+</ol>
+<blockquote>
+<p><strong>Nota a posteriori</strong>: el plan anterior preveía que solo con #52 no se
+alcanzaría el criterio del MVP 6 y que haría falta una 6.D sobre presión.
+<strong>La realidad superó la predicción</strong> — ver sección siguiente.</p>
+</blockquote>
+<hr>
+<h2 id="post-52-efecto-real-del-refactor">Post-#52: efecto real del refactor</h2>
+<p>Tras convertir <code>interpolar</code> y <code>semiLagrangiano</code> a templates en
+<code>engine/adveccion.h</code> (sin tocar nada más, mismo algoritmo, mismo orden de
+operaciones), se reproduce todo el experimento sobre el binario nuevo.</p>
+<h3 id="perf-stat-antes-vs-despues"><code>perf stat</code> antes vs después</h3>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">Pre-#52</th>
+<th style="text-align: right;">Post-#52</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tiempo total (1 IGNITE + 30 TICK)</td>
+<td style="text-align: right;">1,629 s</td>
+<td style="text-align: right;">0,973 s</td>
+<td style="text-align: right;"><strong>−40,3 %</strong></td>
+</tr>
+<tr>
+<td>cycles:u</td>
+<td style="text-align: right;">6,62 G</td>
+<td style="text-align: right;">3,90 G</td>
+<td style="text-align: right;">−41,1 %</td>
+</tr>
+<tr>
+<td>instructions:u</td>
+<td style="text-align: right;">21,33 G</td>
+<td style="text-align: right;">17,34 G</td>
+<td style="text-align: right;">−18,7 %</td>
+</tr>
+<tr>
+<td><strong>IPC</strong></td>
+<td style="text-align: right;">3,22</td>
+<td style="text-align: right;"><strong>4,44</strong></td>
+<td style="text-align: right;">+37,9 %</td>
+</tr>
+<tr>
+<td>cache-misses (% of refs)</td>
+<td style="text-align: right;">2,01 %</td>
+<td style="text-align: right;">2,34 %</td>
+<td style="text-align: right;">sigue irrelevante</td>
+</tr>
+<tr>
+<td>branch-misses (% of branches)</td>
+<td style="text-align: right;">0,31 %</td>
+<td style="text-align: right;">0,14 %</td>
+<td style="text-align: right;">menos despacho indirecto</td>
+</tr>
+</tbody>
+</table>
+<p>Lectura del IPC: <strong>4,44 está al límite teórico</strong> de la microarquitectura
+(~4 op/cycle de pico). Solo se llega a ese rango con <strong>vectorización SIMD</strong> y
+desenrollado agresivo de bucles. La conversión a template desbloqueó al
+compilador para hacer ambas cosas.</p>
+<p>La caída de instructions de 21,33 G → 17,34 G (−4 G) es la otra señal: 4 G de
+instrucciones de despacho indirecto y "trampolines" de <code>std::function</code>
+<strong>simplemente desaparecieron</strong>.</p>
+<h3 id="top-funciones-antes-vs-despues">Top funciones antes vs después</h3>
+<pre><code>ANTES (pre-#52)                                 DESPUÉS (post-#52)
+─────────────────────────────────────           ──────────────────────────────────────
+41,22 %  semiLagrangiano(...std::function)      64,84 %  resolverPresion (Jacobi)
+38,57 %  resolverPresion (Jacobi)                8,08 %  semiLagrangiano&lt;lambda#1&gt;
+ 4,01 %  _Function_handler&lt;#1&gt;::_M_invoke        7,67 %  semiLagrangiano&lt;lambda#3&gt;
+ 3,83 %  _Function_handler&lt;#2&gt;::_M_invoke        7,32 %  semiLagrangiano&lt;lambda#2&gt;
+ 3,68 %  _Function_handler&lt;#3&gt;::_M_invoke        1,88 %  main
+ 1,55 %  advectar                                1,63 %  advectar
+                                                 1,48 %  std::basic_filebuf::xsgetn
+                                                 1,34 %  WorldData::cargar
+</code></pre>
+<p>Cambios cualitativos clave:</p>
+<ul>
+<li><strong>Los tres <code>_Function_handler::_M_invoke</code> desaparecieron</strong>. Era exactamente
+  lo predicho: sin <code>std::function</code>, no hay trampolines.</li>
+<li><code>semiLagrangiano</code> aparece ahora <strong>una vez por especialización</strong> template
+  (<code>&lt;lambda#1&gt;</code>, <code>&lt;lambda#2&gt;</code>, <code>&lt;lambda#3&gt;</code>). Cada llamada va a un símbolo
+  distinto que el compilador ha clonado e inlinedado independientemente —
+  incluso aplicó la transformación <code>.isra.0</code> (interprocedural scalar
+  replacement of aggregates), prueba de que pudo razonar sobre la lambda
+  como tipo conocido.</li>
+<li>En conjunto, <strong>advección bajó de ~54 % a ~25 %</strong> (8,08 + 7,67 + 7,32 + 1,63).</li>
+</ul>
+<h3 id="bench-de-tick-por-cuadrantes-activos">Bench de tick por cuadrantes activos</h3>
+<p><code>tools/baseline_mvp5.json</code> vs <code>tools/mvp6_post52.json</code>, mismo método,
+<code>bench_tick.py --activos 1 5 10 20 --warmup 1 --ticks 4</code>.</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">N</th>
+<th style="text-align: right;">Pre-#52 (ms)</th>
+<th style="text-align: right;">Post-#52 (ms)</th>
+<th style="text-align: right;">Δ</th>
+<th style="text-align: right;">Criterio MVP 6</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">52,23</td>
+<td style="text-align: right;"><strong>11,93</strong></td>
+<td style="text-align: right;">−77,2 %</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">229,55</td>
+<td style="text-align: right;"><strong>62,54</strong></td>
+<td style="text-align: right;">−72,7 %</td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">450,92</td>
+<td style="text-align: right;"><strong>125,27</strong></td>
+<td style="text-align: right;">−72,2 %</td>
+<td style="text-align: right;">&lt; 500 ms ✅</td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">640,65</td>
+<td style="text-align: right;"><strong>243,66</strong></td>
+<td style="text-align: right;">−62,0 %</td>
+<td style="text-align: right;"><strong>&lt; 400 ms ✅</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="el-criterio-del-mvp-6-se-alcanza-solo-con-52">El criterio del MVP 6 se alcanza solo con #52</h3>
+<p>El criterio definido en el diseño era <strong><code>tick &lt; 400 ms con N=20</code></strong>. El bench
+post-#52 mide <strong>243,66 ms</strong> con N=20 — un margen del 39 % bajo el límite.</p>
+<p>Esto <strong>invalida la predicción "solo con #52 no se llega"</strong> que se escribió
+antes de tener datos. La razón por la que la predicción era pesimista: solo
+contaba el ahorro directo de los <code>_Function_handler::_M_invoke</code> (~12 %) y un
+inlining moderado. <strong>No anticipó que el inliner desbloquease vectorización
+SIMD del bucle de advección completo</strong>, que es lo que en realidad subió el
+IPC de 3,22 a 4,44 y cortó instrucciones a la mitad.</p>
+<p>Lección para futuro: convertir <code>std::function</code> a template <strong>no es solo quitar
+overhead de despacho</strong> — es <strong>quitarle un muro al optimizador</strong> para que aplique
+todas las transformaciones que tenía pendientes.</p>
+<h3 id="implicaciones-para-el-milestone">Implicaciones para el milestone</h3>
+<ul>
+<li><strong>Issue #52</strong>: cumple su criterio con creces. Cierra el cuello de advección.</li>
+<li><strong>Issue #53 (SoA)</strong>: se cierra como <strong>no necesaria</strong>. La hipótesis de cache
+  layout sigue invalidada (cache-miss del 2,34 %, IPC al pico). Cualquier
+  ganancia teórica sería ruido frente a estos números.</li>
+<li><strong>Issue 6.D nueva sobre <code>resolverPresion</code></strong>: <strong>ya no hace falta para el
+  MVP 6</strong>. El criterio (<code>tick &lt; 400 ms con N=20</code>) está cumplido. Sigue siendo
+  cierto que <code>resolverPresion</code> ocupa el grueso del tick (64,84 %), pero la
+  decisión de optimizarla se queda como <strong>deuda técnica para un MVP futuro</strong>
+  cuando aparezca un nuevo criterio (p. ej. N=50 con ≥30 fps). Anotar en
+  <code>future-design-decissions.md</code>.</li>
+<li><strong>Determinismo numérico</strong>: el snapshot de <code>test_simulacion.cpp:127</code>
+  sigue verde tras el refactor — el cambio no alteró ningún resultado
+  bit-a-bit. Era importante confirmarlo: si se hubiera roto, indicaría
+  reordenamiento de operaciones por el compilador, no solo inlinning.</li>
+</ul>
+<h3 id="reproducibilidad">Reproducibilidad</h3>
+<pre><code class="language-bash"># 1) Compilar binario release (para bench) y debug (para perf)
+make -C engine motor motor_debug
+
+# 2) Bench
+cd tools &amp;&amp; .venv/bin/python bench_tick.py --activos 1 5 10 20 --json mvp6_post52.json
+
+# 3) Profiling
+cd .. &amp;&amp; bash tools/profile.sh
+</code></pre>
+<p><code>tools/mvp6_post52.json</code> queda versionado como referencia post-#52,
+en paralelo a <code>tools/baseline_mvp5.json</code>.</p>
+<hr>
+<h2 id="artefactos">Artefactos</h2>
+<p>Versionados (commit del cierre de #51):</p>
+<ul>
+<li><code>engine/perf_input.txt</code> — input determinista.</li>
+<li><code>engine/build_motor_debug.sh</code> — compilación debug-friendly.</li>
+<li><code>engine/Makefile</code> — <code>motor</code>, <code>motor_debug</code>, <code>clean</code>.</li>
+<li><code>tools/profile.sh</code> — runner de perf con validaciones.</li>
+</ul>
+<p>No versionados (regenerables, en <code>.gitignore</code>):</p>
+<ul>
+<li><code>tools/profile-output/perf-stat.txt</code></li>
+<li><code>tools/profile-output/perf.data</code> (~55 MB)</li>
+<li><code>tools/profile-output/perf-report.txt</code></li>
+</ul>
+<p>Para reanalizar interactivamente:</p>
+<pre><code class="language-bash">perf report -i tools/profile-output/perf.data
+</code></pre>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

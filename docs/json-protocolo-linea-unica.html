@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peculiaridad: el motor exige JSON compacto en una sola línea — heredocs multilínea causan fallos silenciosos · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Peculiaridad: el motor exige JSON compacto en una sola línea — heredocs multilínea causan fallos silenciosos</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="protocolo-del-motor.html">Protocolo del Motor</a> · <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico — protocolo JSON eliminado</div><div class="callout-body"><p>El protocolo JSON del motor ya no existe. Fue sustituido en el rediseño
+"Arquitectura de Cuadrantes" por un protocolo de comandos texto
+(<a href="protocolo-del-motor.html">Protocolo del Motor</a>). El bug concreto descrito aquí ya no es
+reproducible — el nuevo motor lee comandos como <code>IGNITE</code>, <code>TICK</code>,
+<code>RESET</code>, <code>QUIT</code> línea a línea.</p>
+<p>La lección general <strong>sigue siendo válida</strong> para cualquier protocolo
+stdin/stdout línea a línea: si construyes el comando en bash con un
+heredoc multilínea, <code>std::getline</code> solo lee la primera línea y el
+proceso falla silenciosamente. Ahora aplicado al nuevo protocolo:
+<code>printf "IGNITE 275 275\nTICK\nQUIT\n"</code> ✓; <code>cat &lt;&lt; EOF ... EOF</code> ✗
+si el contenido tiene saltos no intencionados.</p></div></div>
+<p><strong>MVP afectado:</strong> MVP 4 (motor monolítico, ya retirado)
+<strong>Archivos involucrados (históricos):</strong> <code>engine/main.cpp</code> (antiguo) ·
+<code>engine/test_propagacion.sh</code> (eliminado)</p>
+<hr>
+<h2 id="el-protocolo-de-comunicacion-del-motor">El protocolo de comunicación del motor</h2>
+<p>El motor C++ es un proceso persistente que lee JSONs de stdin y escribe JSONs en stdout. El protocolo es línea a línea:</p>
+<pre><code>stdin  → un JSON compacto + &quot;\n&quot;  (una línea)
+stdout ← un JSON compacto + &quot;\n&quot;  (una línea de respuesta)
+</code></pre>
+<p><code>main.cpp</code> usa <code>std::getline</code> para leer:</p>
+<pre><code class="language-cpp">while (std::getline(std::cin, linea)) {
+    if (linea.empty()) continue;
+    Grid estadoActual = stringAGrid(linea);  // parsea una línea completa
+    ...
+}
+</code></pre>
+<p><strong>La consecuencia</strong>: si el JSON tiene saltos de línea, <code>getline</code> lee solo la primera línea, que es JSON inválido. El motor lo descarta silenciosamente (la línea vacía se salta con <code>continue</code>) o intenta parsear un fragmento incompleto y el comportamiento es indefinido.</p>
+<hr>
+<h2 id="como-se-manifesto-el-bug">Cómo se manifestó el bug</h2>
+<p>Al escribir <code>engine/test_propagacion.sh</code>, el estado inicial se definió con un heredoc multilínea para legibilidad:</p>
+<pre><code class="language-bash"># INCORRECTO — produce JSON multilínea
+ESTADO_INICIAL=$(cat &lt;&lt; 'JSON'
+{&quot;grid_size&quot;:{&quot;x&quot;:7,&quot;y&quot;:5,&quot;z&quot;:7},&quot;cells&quot;:[
+  {&quot;x&quot;:3,&quot;y&quot;:2,&quot;z&quot;:3, ...},
+  {&quot;x&quot;:2,&quot;y&quot;:2,&quot;z&quot;:3, ...}
+]}
+JSON
+)
+</code></pre>
+<p>El motor recibía la primera línea (<code>{"grid_size":{"x":7,"y":5,"z":7},"cells":[</code>) que no es JSON válido. En lugar de dar error visible, producía salida vacía en stdout. El script interpretaba la salida vacía como un fallo del motor y moría en el primer tick.</p>
+<p>El síntoma era confuso: la compilación era exitosa, el motor arrancaba, pero el script se interrumpía silenciosamente sin mensaje de error claro.</p>
+<hr>
+<h2 id="la-correccion">La corrección</h2>
+<p>El JSON debe ir en una sola línea. En bash:</p>
+<pre><code class="language-bash"># CORRECTO — JSON compacto en una variable de una sola línea
+ESTADO_INICIAL='{&quot;grid_size&quot;:{&quot;x&quot;:7,&quot;y&quot;:5,&quot;z&quot;:7},&quot;cells&quot;:[{&quot;x&quot;:3,&quot;y&quot;:2,&quot;z&quot;:3,...},{&quot;x&quot;:2,&quot;y&quot;:2,&quot;z&quot;:3,...}]}'
+</code></pre>
+<p>Si el JSON es largo, generarlo desde Python (que produce una sola línea con <code>json.dumps</code>) es la opción más robusta:</p>
+<pre><code class="language-bash">ESTADO_INICIAL=$(python3 -c &quot;import json; print(json.dumps({...}))&quot;)
+</code></pre>
+<p>La API (<code>api/motor.py</code>) ya hace esto correctamente:</p>
+<pre><code class="language-python">proceso.stdin.write(json.dumps(estado) + &quot;\n&quot;)
+</code></pre>
+<p><code>json.dumps</code> por defecto produce JSON compacto en una sola línea. El <code>"\n"</code> es el terminador que el motor espera.</p>
+<hr>
+<h2 id="regla-para-cualquier-script-que-use-el-motor-directamente">Regla para cualquier script que use el motor directamente</h2>
+<ol>
+<li>Todo JSON enviado al motor <strong>debe ser una sola línea</strong> (sin saltos).</li>
+<li>Generar JSONs desde Python con <code>json.dumps()</code> garantiza esto automáticamente.</li>
+<li>En bash, usar variables de cadena directa (sin heredoc) o generar con <code>python3 -c</code>.</li>
+<li>Si el motor no responde, verificar primero si el JSON tiene saltos de línea — es el fallo silencioso más común al trabajar con el motor desde scripts.</li>
+</ol>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

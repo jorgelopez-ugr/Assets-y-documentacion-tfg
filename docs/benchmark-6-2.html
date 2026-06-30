@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Benchmark 6.2 — Latencia y profiling del motor de simulación · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Resultados</p>
+    <h1>Benchmark 6.2 — Latencia y profiling del motor de simulación</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Fase de testing: mediciones aisladas del motor C++ vía <code>api/headless_bench.py</code>,
+<strong>sin Godot conectado</strong> y <strong>sin modificar el motor</strong>. El objetivo es medir
+latencia post-optimización, repartir el coste del tick por fase, y comparar
+el modo superficie (default) contra el volumétrico.</p>
+</blockquote>
+<h2 id="condiciones-de-la-medicion">Condiciones de la medición</h2>
+<table>
+<thead>
+<tr>
+<th>Parámetro</th>
+<th>Valor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Fecha</td>
+<td>2026-06-18</td>
+</tr>
+<tr>
+<td>Hardware</td>
+<td>AMD Ryzen 7 5800H (8 núcleos / 16 hilos)</td>
+</tr>
+<tr>
+<td>SO / compilador</td>
+<td>Ubuntu 24.04, g++ 13.3.0</td>
+</tr>
+<tr>
+<td>Flags de compilación</td>
+<td><code>-std=c++17 -Wall -Wextra -fopenmp -O2</code> (<code>make motor</code>)</td>
+</tr>
+<tr>
+<td>Rama / commit</td>
+<td><code>main</code> @ <code>6fd8336</code></td>
+</tr>
+<tr>
+<td>Ignición</td>
+<td><code>(900, 700)</code> — sobre la mancha de combustible (ver nota)</td>
+</tr>
+<tr>
+<td>Godot</td>
+<td><strong>no conectado</strong> (solo API + motor)</td>
+</tr>
+<tr>
+<td>API</td>
+<td>FastAPI/uvicorn en <code>127.0.0.1:8000</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="nota-sobre-el-punto-de-ignicion">Nota sobre el punto de ignición</h3>
+<p>La ignición <strong>por defecto del bench <code>(799, 696)</code> cae sobre una celda con
+<code>fuel = 0</code></strong>: el fuego no prende y no propaga (BURNING se queda en 1, 0 diffs).
+Consultando <code>GET /fuel_map</code> (1598×1393, solo el <strong>13.7 %</strong> de las celdas tiene
+combustible) se eligió <strong><code>(900, 700)</code></strong>, dentro de la mancha densa más grande
+(<code>fuel = 230</code>, sus 49 vecinos 7×7 con combustible). Todas las mediciones de este
+documento usan esa ignición, donde el incendio <strong>sí propaga</strong> y las cifras
+reflejan el motor <strong>bajo carga real</strong>.</p>
+<blockquote>
+<p>El primer tick incluye un coste de arranque (activación inicial de cuadrantes);
+el mínimo de ~14 ms corresponde a ese arranque, no al régimen.</p>
+</blockquote>
+<hr>
+<h2 id="medicion-1-latencia-post-optimizacion-estado-actual-de-main">Medición 1 — Latencia post-optimización (estado actual de <code>main</code>)</h2>
+<p>Comando exacto:</p>
+<pre><code class="language-bash">python3 api/headless_bench.py --ticks 200 --ignite 900 700 --csv bench_main.csv
+</code></pre>
+<p><strong>Latencia <code>/tick</code> agregada sobre los 200 ticks</strong> (p50/p95/máx son estadísticos
+del run completo):</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>ms</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>media</td>
+<td>246.49</td>
+</tr>
+<tr>
+<td>p50</td>
+<td>259.53</td>
+</tr>
+<tr>
+<td>p95</td>
+<td>380.73</td>
+</tr>
+<tr>
+<td>máxima</td>
+<td>419.20</td>
+</tr>
+<tr>
+<td>mínima</td>
+<td>13.98</td>
+</tr>
+</tbody>
+</table>
+<p>Throughput real: <strong>3.3 ticks/s</strong> (60.38 s para 200 ticks). Diffs/tick: media
+3408, máx 5802, total 681 683.</p>
+<p><strong>Valores por tick solicitados</strong> (de <code>bench_main.csv</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>Latencia (ms)</th>
+<th>n_diffs</th>
+<th>BURNING</th>
+<th>SMOKE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td>40.11</td>
+<td>1745</td>
+<td>2446</td>
+<td>4 007</td>
+</tr>
+<tr>
+<td>60</td>
+<td>240.20</td>
+<td>4018</td>
+<td>5619</td>
+<td>47 663</td>
+</tr>
+<tr>
+<td>100</td>
+<td>371.96</td>
+<td>5669</td>
+<td>7806</td>
+<td>119 306</td>
+</tr>
+<tr>
+<td>140</td>
+<td>373.03</td>
+<td>4759</td>
+<td>6211</td>
+<td>186 372</td>
+</tr>
+<tr>
+<td>160</td>
+<td>263.63</td>
+<td>2005</td>
+<td>2715</td>
+<td>209 260</td>
+</tr>
+<tr>
+<td>200</td>
+<td>153.97</td>
+<td>1627</td>
+<td>2206</td>
+<td>235 807</td>
+</tr>
+</tbody>
+</table>
+<p>El frente de incendio crece hasta ~8000 celdas <code>BURNING</code> (pico tick 80) y luego
+decae al agotarse el combustible local, mientras el <code>SMOKE</code> acumulado sigue
+subiendo hasta 235 807 celdas. La latencia sigue esa curva: sube con el frente
+activo y baja al apagarse.</p>
+<hr>
+<h2 id="medicion-2-profiling-por-fase-estado-actual">Medición 2 — Profiling por fase (estado actual)</h2>
+<p>Reset limpio (superficie) + 100 ticks desde <code>(900, 700)</code>, luego <code>GET /stats</code>
+(acumulado en ns desde el último reset).</p>
+<p>Salida cruda de <code>/stats</code>:</p>
+<pre><code class="language-json">{&quot;ticks&quot;:100,&quot;viento&quot;:8060167660,&quot;buoyancy&quot;:6833456508,&quot;presion&quot;:163225437554,
+ &quot;adveccion&quot;:34025138942,&quot;reaccion&quot;:5175494360,&quot;sostener&quot;:3762632702,
+ &quot;halos&quot;:81429804,&quot;desact&quot;:181688702,&quot;act&quot;:157968587,
+ &quot;presion_iters&quot;:23884,&quot;presion_calls&quot;:2503}
+</code></pre>
+<p><strong>Desglose por fase</strong> (ms/tick = trabajo-CPU agregado por tick; ver caveat):</p>
+<table>
+<thead>
+<tr>
+<th>Fase</th>
+<th>ms/tick (CPU)</th>
+<th>% del tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>presión</td>
+<td>1632.25</td>
+<td>73.69 %</td>
+</tr>
+<tr>
+<td>advección</td>
+<td>340.25</td>
+<td>15.36 %</td>
+</tr>
+<tr>
+<td>viento</td>
+<td>80.60</td>
+<td>3.64 %</td>
+</tr>
+<tr>
+<td>buoyancy</td>
+<td>68.33</td>
+<td>3.09 %</td>
+</tr>
+<tr>
+<td>reacción</td>
+<td>51.75</td>
+<td>2.34 %</td>
+</tr>
+<tr>
+<td>sostener</td>
+<td>37.63</td>
+<td>1.70 %</td>
+</tr>
+<tr>
+<td>desact</td>
+<td>1.82</td>
+<td>0.08 %</td>
+</tr>
+<tr>
+<td>act</td>
+<td>1.58</td>
+<td>0.07 %</td>
+</tr>
+<tr>
+<td>halos</td>
+<td>0.81</td>
+<td>0.04 %</td>
+</tr>
+<tr>
+<td><strong>total</strong></td>
+<td><strong>2215.03</strong></td>
+<td><strong>100.00 %</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Convergencia del solver de presión (Jacobi):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>Valor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>iters totales</td>
+<td>23 884</td>
+</tr>
+<tr>
+<td>llamadas a <code>resolverPresion</code></td>
+<td>2 503</td>
+</tr>
+<tr>
+<td><strong>avg iters/call</strong></td>
+<td><strong>9.54</strong></td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>⚠️ <strong>Caveat sobre el ms/tick absoluto.</strong> Los timers del motor están dentro del
+<code>#pragma omp parallel for</code> sobre cuadrantes (<code>engine/simulacion.h:198</code>) y suman
+atómicamente el tiempo de cada fase <strong>sobre
+todos los cuadrantes y threads</strong>. El total (2215 ms/tick) es por tanto
+<em>trabajo-CPU agregado</em>, no wall-clock: la latencia real medida es ~217 ms/tick
+porque ese trabajo se reparte entre los 16 hilos. <strong>El reparto porcentual sí es
+la señal válida.</strong></p>
+<p><strong>Lectura:</strong> presión + advección concentran <strong>~89 %</strong> del coste, y la presión
+sola <strong>~74 %</strong>. Bajo carga el Jacobi sube a <strong>9.54 iters/call</strong> (vs 2.60 en
+reposo), aún lejos del cap → la parada temprana sigue funcionando. <strong>El solver
+de presión es el cuello de botella claro del motor</strong> y el primer candidato a
+optimizar.</p>
+</blockquote>
+<hr>
+<h2 id="medicion-3-superficie-vs-volumetrico">Medición 3 — Superficie vs volumétrico</h2>
+<p>Cada modo: reset al modo correspondiente + 100 ticks desde <code>(900, 700)</code>.</p>
+<pre><code class="language-bash">curl -X POST localhost:8000/reset -d '{&quot;physics_mode&quot;:&quot;surface&quot;}'
+python3 api/headless_bench.py --ticks 100 --ignite 900 700 --csv bench_surface.csv
+
+curl -X POST localhost:8000/reset -d '{&quot;physics_mode&quot;:&quot;volumetric&quot;}'
+python3 api/headless_bench.py --ticks 100 --ignite 900 700 --csv bench_volumetric.csv
+</code></pre>
+<p><strong>Modo superficie (default):</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>Latencia (ms)</th>
+<th>n_diffs</th>
+<th>BURNING</th>
+<th>SMOKE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td>39.45</td>
+<td>1745</td>
+<td>2446</td>
+<td>4 007</td>
+</tr>
+<tr>
+<td>40</td>
+<td>160.96</td>
+<td>3739</td>
+<td>5437</td>
+<td>21 320</td>
+</tr>
+<tr>
+<td>60</td>
+<td>246.82</td>
+<td>4018</td>
+<td>5619</td>
+<td>47 663</td>
+</tr>
+<tr>
+<td>80</td>
+<td>373.93</td>
+<td>5464</td>
+<td>8045</td>
+<td>80 479</td>
+</tr>
+<tr>
+<td>100</td>
+<td>387.23</td>
+<td>5669</td>
+<td>7806</td>
+<td>119 306</td>
+</tr>
+</tbody>
+</table>
+<p>Agregado: media 222.1 ms · p50 244.4 · p95 392.1 · máx 409.9 · diffs/tick 3507.</p>
+<p><strong>Modo volumétrico:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>Latencia (ms)</th>
+<th>n_diffs</th>
+<th>BURNING</th>
+<th>SMOKE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td>31.30</td>
+<td>407</td>
+<td>46</td>
+<td>431</td>
+</tr>
+<tr>
+<td>40</td>
+<td>121.33</td>
+<td>5 481</td>
+<td>666</td>
+<td>8 074</td>
+</tr>
+<tr>
+<td>60</td>
+<td>757.47</td>
+<td>37 956</td>
+<td>1687</td>
+<td>63 823</td>
+</tr>
+<tr>
+<td>80</td>
+<td>1728.30</td>
+<td>79 509</td>
+<td>1962</td>
+<td>146 892</td>
+</tr>
+<tr>
+<td>100</td>
+<td>3548.11</td>
+<td>155 133</td>
+<td>3781</td>
+<td>375 644</td>
+</tr>
+</tbody>
+</table>
+<p>Agregado: media 850.8 ms · p50 304.0 · p95 2918.3 · máx 3548.1 · diffs/tick 39 936.</p>
+<h3 id="lectura-de-la-comparativa">Lectura de la comparativa</h3>
+<ul>
+<li><strong>El volumétrico explota con el tamaño del frente.</strong> En el tick 100 cuesta
+  <strong>3548 ms/tick vs 387 ms/tick</strong> en superficie (<strong>~9×</strong>) y emite <strong>155 133 diffs
+  vs 5 669</strong> (<strong>~27×</strong>): la advección 3D mueve el humo por todas las celdas de
+  aire activas, y eso es exactamente lo que el modo superficie evita al no
+  calcular el aire.</li>
+<li><strong>Crecimiento del coste</strong>: en superficie la latencia se estabiliza en ~390 ms
+  (acotada por las celdas de suelo del frente); en volumétrico crece de forma
+  casi monótona (31 → 3548 ms) porque la columna de humo no para de expandirse en
+  3D (375 644 celdas <code>SMOKE</code> en el tick 100, vs 119 306 en superficie).</li>
+<li><strong>Cola de latencia</strong>: p95 de 2918 ms (volumétrico) vs 392 ms (superficie) —
+  ~7.4× peor en el peor caso.</li>
+<li>Esto <strong>valida la decisión de diseño del TFG</strong>: el modo superficie por defecto
+  es lo que hace usable la herramienta interactiva; el volumétrico queda para la
+  demo técnica de la defensa, donde el coste no importa.</li>
+</ul>
+<hr>
+<h2 id="conclusiones">Conclusiones</h2>
+<ol>
+<li><strong>Régimen permanente</strong> (superficie, frente cargado): ~250 ms/tick, ~3–4
+   ticks/s. Aceptable para evaluación offline de caminos; no es interactivo a
+   60 fps, pero el flujo del TFG (trazar → quemar → puntuar) no lo exige.</li>
+<li><strong>Dentro del motor</strong>, la presión es el 74 % del coste y la advección el resto;
+   pero <strong>el motor entero es solo ~13–40 % del <code>/tick</code></strong> (ver reproducción de #64
+   abajo). El cuello de botella real es el <strong>pipeline I/O monohilo</strong> (CHANGED +
+   HTTP + diff Python), que crece con el nº de celdas que cambian.</li>
+<li><strong>Superficie ≪ volumétrico</strong> en coste (~9× en el tick 100), confirmando que
+   el flag <code>physics_mode=surface</code> por defecto es la elección correcta — sobre
+   todo porque emite ~20× menos diffs, que es lo que de verdad pesa.</li>
+<li><strong>El nº de hilos OpenMP es casi irrelevante</strong> para la latencia (1h ≈ 16h en
+   volumétrico): el motor no es el cuello de botella. La palanca real es reducir
+   los CHANGED emitidos / cambiar el protocolo I/O, no el paralelismo.</li>
+</ol>
+<hr>
+<h2 id="reproduccion-del-milestone-de-optimizacion-6167">Reproducción del milestone de optimización (#61–#67)</h2>
+<p>El milestone <em>"Optimización del motor: paralelismo + reducción de coste"</em>
+(mayo 2026, issues #61–#67) midió una batería de benchmarks documentada en
+<a href="optimizacion-fase-benchmarking-recopilatorio.html">Optimización — Fase Benchmarking — Recopilatorio</a>. Aquí se <strong>repiten esas
+mediciones con el motor final</strong> para documentar la mejora.</p>
+<blockquote>
+<p><strong>Aviso metodológico (importante).</strong> Las cifras históricas son <strong>pre-refactor</strong>:
+el motor solo tenía física volumétrica y el <code>world.dat</code> era otro (la ignición
+central caía sobre combustible). El refactor de caminos forestales (1) cambió
+<code>world.dat</code> — la ignición central <code>(799,696)</code> ahora cae en <code>fuel=0</code> — y (2)
+metió el <strong>modo superficie por defecto</strong>. Por petición, esta reproducción se
+hace en <strong>modo superficie</strong> (el producto actual), con ignición <code>(900,700)</code>.
+Por tanto <strong>no es apples-to-apples</strong> con el histórico volumétrico: lo
+comparable son las <em>características de rendimiento del motor</em> (reparto por fase,
+convergencia Jacobi, escalado con hilos, cuota de I/O), no los conteos
+absolutos de celdas (dependen del world y la ignición).</p>
+</blockquote>
+<h3 id="el-hallazgo-principal-el-cuello-de-botella-no-es-el-motor-es-el-io">El hallazgo principal: el cuello de botella NO es el motor, es el I/O</h3>
+<blockquote>
+<p>⚠️ <strong>Corrección (rev. 18 jun 2026).</strong> Una primera versión de esta sección
+concluyó que "el paralelismo es contraproducente, usar <code>OMP_NUM_THREADS=1</code>".
+Esa conclusión era <strong>errónea por leer mal el <code>/stats</code></strong>: el ms/tick de <code>/stats</code>
+es trabajo-CPU sumado entre hilos e <strong>inflado por contención</strong>, no wall-clock.
+Al medir con <strong>1 hilo</strong> (sin contención ni suma) se ve la verdad: el cómputo
+del motor es una <strong>minoría</strong> del <code>/tick</code>; el resto es el pipeline de I/O. Lo
+que sigue es la versión corregida.</p>
+</blockquote>
+<p><strong>Prueba decisiva — 1 hilo vs 16 hilos en volumétrico</strong> (el régimen pesado, 80
+ticks, ignición <code>(900,700)</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">1 hilo</th>
+<th style="text-align: right;">16 hilos</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Latencia media /tick</td>
+<td style="text-align: right;">406.3 ms</td>
+<td style="text-align: right;">454.9 ms</td>
+</tr>
+<tr>
+<td>Latencia tick 80</td>
+<td style="text-align: right;">1664 ms</td>
+<td style="text-align: right;">1757 ms</td>
+</tr>
+<tr>
+<td>Cómputo motor (wall, vía <code>/stats</code> a 1 hilo)</td>
+<td style="text-align: right;"><strong>51.6 ms/tick</strong></td>
+<td style="text-align: right;">—</td>
+</tr>
+<tr>
+<td>diffs/tick (tick 80)</td>
+<td style="text-align: right;">79 509</td>
+<td style="text-align: right;">79 509</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>1 hilo ≈ 16 hilos</strong> (incluso 1 hilo algo más rápido). Si el motor fuera el
+cuello de botella, 16 hilos dividirían su coste y la latencia se desplomaría.
+No lo hace → <strong>el motor no es lo que manda</strong>. El <code>/stats</code> a 1 hilo lo confirma:
+el cómputo real del motor es <strong>51.6 ms/tick</strong>, pero el <code>/tick</code> es <strong>406 ms</strong> →
+<strong>el motor es solo ~13 %; el ~87 % restante es I/O</strong> (el motor emite ~80 000
+líneas <code>CHANGED</code> por stdout, la API las parsea, calcula el diff y serializa a
+JSON por HTTP — <strong>código Python monohilo, ajeno a <code>OMP_NUM_THREADS</code></strong>).</p>
+</blockquote>
+<p>Barrido de hilos en <strong>modo superficie</strong> (100 ticks, <code>(900,700)</code>):</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">Hilos</th>
+<th style="text-align: right;">Latencia media (ms)</th>
+<th style="text-align: right;">presión (CPU-sum, inflado)</th>
+<th style="text-align: right;">total CPU-sum</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;"><strong>1</strong></td>
+<td style="text-align: right;"><strong>97.23</strong></td>
+<td style="text-align: right;">17.49</td>
+<td style="text-align: right;">38.28</td>
+</tr>
+<tr>
+<td style="text-align: right;">4</td>
+<td style="text-align: right;">157.77</td>
+<td style="text-align: right;">284.49</td>
+<td style="text-align: right;">370.27</td>
+</tr>
+<tr>
+<td style="text-align: right;">8</td>
+<td style="text-align: right;">189.32</td>
+<td style="text-align: right;">727.12</td>
+<td style="text-align: right;">929.17</td>
+</tr>
+<tr>
+<td style="text-align: right;">16</td>
+<td style="text-align: right;">221.96</td>
+<td style="text-align: right;">1669.35</td>
+<td style="text-align: right;">2172.49</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>En superficie sí se ve una penalización al subir hilos (97 → 222 ms), pero
+<strong>no porque el paralelismo "no escale": porque añade overhead a un cómputo que
+ya era minoritario.</strong> Con 1 hilo el motor son ~38 ms (de los 97 totales, ~40 %;
+el resto I/O con solo ~3 500 diffs/tick); al meter 16 hilos sobre un solver
+<strong>memory-bound</strong> y un puñado de cuadrantes, la contención de L3 + el spin-wait
+de los hilos ociosos inflan ese cómputo a ~160 ms de reloj. Es overhead puro
+sobre trabajo que no necesitaba paralelizarse. En volumétrico ese overhead se
+pierde dentro del I/O gigante (de ahí 1h≈16h).</p>
+<p><strong>Conclusión correcta:</strong> el nº de hilos es <strong>casi irrelevante</strong> para la
+latencia percibida. No "arregla" el lag ni lo causa. La palanca real es
+<strong>reducir las celdas CHANGED emitidas</strong> (el modo superficie ya emite ~20× menos
+que el volumétrico) o rediseñar el protocolo I/O (binario / diffs en C++), tal
+como ya identificó el histórico #64 §4 y §6. <code>OMP_NUM_THREADS=1</code> solo ahorra el
+pequeño overhead de contención en superficie; no es la optimización importante.</p>
+</blockquote>
+<p><strong>Determinismo entre hilos (repro de #64/#65):</strong> los 4 configs produjeron
+<strong>exactamente</strong> los mismos diffs (350 703 totales) y los mismos conteos (7 806
+BURNING / 119 306 SMOKE en el tick 100). El paralelismo sigue siendo
+bit-determinista.</p>
+<h3 id="comparativa-medicion-a-medicion-historico-motor-final">Comparativa medición a medición (histórico → motor final)</h3>
+<table>
+<thead>
+<tr>
+<th>Medición histórica</th>
+<th>Valor histórico (volumétrico, world viejo)</th>
+<th>Motor final (superficie, <code>900,700</code>)</th>
+<th>Lectura</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>#62</strong> reparto por fase</td>
+<td>presión 69.6 %, advección 28.1 %</td>
+<td>presión 76.8 %, advección 15.8 % (16h)</td>
+<td>Presión sigue dominando; advección pesa menos en superficie</td>
+</tr>
+<tr>
+<td><strong>#63</strong> Jacobi iters/call</td>
+<td>30 fijos → <strong>18.07</strong> (ε=0.5)</td>
+<td><strong>9.54</strong></td>
+<td>Parada temprana sigue activa; converge antes aún (frente menos turbulento)</td>
+</tr>
+<tr>
+<td><strong>#66</strong> presión ms/tick (secuencial)</td>
+<td>60.45 → <strong>21.78</strong></td>
+<td><strong>17.49</strong> (1 hilo)</td>
+<td>La optimización de divergencia precomputada se mantiene; presión secuencial incluso más barata</td>
+</tr>
+<tr>
+<td><strong>#64</strong> speedup multihilo</td>
+<td>máx <strong>1.11×</strong> (4–8 hilos)</td>
+<td><strong>~1× (irrelevante)</strong></td>
+<td>El motor es minoría del <code>/tick</code>; los hilos no mueven la aguja (1h≈16h en volumétrico)</td>
+</tr>
+<tr>
+<td><strong>§4</strong> cuota de cómputo vs I/O</td>
+<td>cómputo físico &lt; 3 % del <code>/tick</code> (tick 160, 22k CHANGED)</td>
+<td>motor ~13 % (volumétrico, 80k diffs) / ~40 % (superficie, 3.5k diffs)</td>
+<td><strong>Confirma el histórico</strong>: el I/O domina y crece con el nº de diffs</td>
+</tr>
+<tr>
+<td><strong>baseline</strong> latencia con frente grande</td>
+<td>726 ms @ tick 100, 10.0 s @ tick 160</td>
+<td>157 ms @ tick 100 (1 hilo), estable ~390 ms (16h) en superficie</td>
+<td>El modo superficie + optimizaciones evita el colapso de latencia del histórico</td>
+</tr>
+</tbody>
+</table>
+<h3 id="cuota-de-computo-vs-io-repro-de-64-4-medida-con-1-hilo">Cuota de cómputo vs I/O (repro de #64 §4) — medida con 1 hilo</h3>
+<p>Medir con 1 hilo es clave: a 1 hilo el <code>total CPU-sum</code> del <code>/stats</code> <strong>sí</strong> es
+wall-clock (no hay suma entre hilos ni contención que lo infle), así que se puede
+comparar directamente con la latencia <code>/tick</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Régimen</th>
+<th style="text-align: right;">Cómputo motor (1 hilo)</th>
+<th style="text-align: right;">Latencia /tick</th>
+<th style="text-align: right;">Motor = %</th>
+<th style="text-align: right;">diffs/tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Volumétrico, tick 80</td>
+<td style="text-align: right;">51.6 ms</td>
+<td style="text-align: right;">406 ms</td>
+<td style="text-align: right;"><strong>~13 %</strong></td>
+<td style="text-align: right;">79 509</td>
+</tr>
+<tr>
+<td>Superficie, 100 ticks</td>
+<td style="text-align: right;">38.3 ms</td>
+<td style="text-align: right;">97 ms</td>
+<td style="text-align: right;"><strong>~40 %</strong></td>
+<td style="text-align: right;">3 507</td>
+</tr>
+</tbody>
+</table>
+<p><strong>El I/O domina y su peso crece con el nº de diffs</strong>, exactamente como concluyó
+el histórico #64 §4 (allí, a tick 160 con ~22 000 CHANGED, el cómputo era &lt;3 %).
+La emisión/parseo de CHANGED + HTTP/JSON + diff en Python es <strong>monohilo</strong> y es la
+verdadera asíntota de rendimiento.</p>
+<h3 id="resumen-de-la-mejora">Resumen de la mejora</h3>
+<ul>
+<li>Las optimizaciones del milestone <strong>se mantienen</strong> en el motor final: parada
+  temprana Jacobi (#63, 9.54 iters/call) y divergencia precomputada (#66,
+  presión secuencial 17.49 ms/tick, en línea con los 21.78 históricos). El modo
+  superficie evita además el colapso de latencia del baseline pre-milestone.</li>
+<li><strong>El motor (incluido su solver de presión) NO es el cuello de botella de la
+  latencia percibida</strong> — es ~13–40 % del <code>/tick</code>. El bottleneck es el pipeline
+  I/O monohilo (CHANGED + HTTP + diff Python), que escala con el nº de celdas que
+  cambian.</li>
+<li>En consecuencia, <strong>el nº de hilos OpenMP es casi irrelevante</strong> para la
+  experiencia de uso (1h ≈ 16h en volumétrico). La palanca de optimización real
+  es <strong>reducir las celdas CHANGED emitidas</strong> o cambiar el protocolo I/O (binario
+  / diffs en C++), no tocar el paralelismo. Material de defensa: un caso de
+  libro de cuello de botella mal atribuido (Amdahl: optimizar el 13 % no mueve
+  el 87 %).</li>
+</ul>
+<hr>
+<h2 id="artefactos-generados">Artefactos generados</h2>
+<ul>
+<li><code>bench_main.csv</code> — 200 filas, Medición 1 (ignición <code>900,700</code>).</li>
+<li><code>bench_surface.csv</code> / <code>bench_volumetric.csv</code> — 100 filas cada uno, Medición 3.</li>
+<li><code>bench_omp_{1,4,8,16}.csv</code> — barrido OpenMP (100 ticks cada uno, surface).</li>
+</ul>
+<blockquote>
+<p>CSVs volcados en <code>/tmp</code> durante la corrida; reproducibles con los comandos de
+arriba. El motor es determinista (sin RNG): re-ejecutar con la misma ignición
+reproduce las cifras dentro del ruido de scheduling/cachés.</p>
+</blockquote>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

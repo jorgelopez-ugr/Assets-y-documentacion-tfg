@@ -1,0 +1,201 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Hoja de estilos compartida de la documentación del testing-lab.
+   Tema OSCURO, técnico y de lectura larga. Una página HTML por operación.
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg:        #0d1117;   /* fondo de página */
+  --papel:     #161b22;   /* tarjetas elevadas (ecuaciones, tablas, cifras, banners) */
+  --papel-2:   #1c232c;   /* cabeceras de tabla / hover */
+  --linea:     #2a313b;
+  --tinta:     #d4dde8;   /* texto */
+  --tinta-soft:#93a1b1;
+  --titulo:    #eef3f9;
+  --acento:    #58b0ec;   /* azul (medido) */
+  --acento2:   #ff8585;   /* rojo (rendimiento) */
+  --ok:        #57d39a;   /* verde (qué demuestra) */
+  --aviso:     #e6c45c;
+  --code-bg:   #0a0e14;
+  --code-fg:   #d4dde8;
+  --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--tinta);
+  font: 17px/1.72 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1000px; margin: 0 auto; padding: 3.5rem 1.6rem 7rem; }
+
+/* Cabecera ─────────────────────────────────────────────────────────────── */
+header.hero {
+  border-left: 4px solid var(--acento);
+  padding: .25rem 0 .25rem 1.4rem;
+  margin-bottom: 2.8rem;
+}
+header.hero .kicker {
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  font-size: .74rem;
+  font-weight: 600;
+  color: var(--acento);
+  margin: 0 0 .5rem;
+}
+header.hero .kicker a { color: var(--acento); }
+header.hero h1 { font-size: 2.5rem; line-height: 1.12; margin: 0 0 .6rem; color: var(--titulo); letter-spacing: -.01em; }
+header.hero p.sub { color: var(--tinta-soft); font-size: 1.12rem; margin: 0; max-width: 46rem; }
+
+/* Tipografía de secciones ──────────────────────────────────────────────── */
+h2 {
+  font-size: 1.62rem;
+  color: var(--titulo);
+  margin: 3.2rem 0 1rem;
+  padding-bottom: .45rem;
+  border-bottom: 1px solid var(--linea);
+  letter-spacing: -.01em;
+}
+h3 { font-size: 1.18rem; color: var(--titulo); margin: 1.9rem 0 .6rem; }
+p  { margin: .85rem 0; }
+a  { color: var(--acento); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: var(--titulo); font-weight: 650; }
+em { color: #c6d2de; }
+ol, ul { margin: .85rem 0; }
+li { margin: .35rem 0; }
+.unidad { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Ecuación destacada ───────────────────────────────────────────────────── */
+.eq {
+  background: var(--papel);
+  border: 1px solid var(--linea);
+  border-left: 3px solid var(--acento);
+  border-radius: 10px;
+  padding: 1.1rem 1.35rem;
+  font-family: "Cambria Math", Georgia, "Times New Roman", serif;
+  font-size: 1.32rem;
+  text-align: center;
+  color: var(--titulo);
+}
+.eq sub, .eq sup { font-size: .72em; }
+.eq small { display: block; font-size: .8rem; color: var(--tinta-soft); margin-top: .55rem;
+            font-family: var(--mono); letter-spacing: .01em; }
+
+/* Figuras (tarjetas claras: las imágenes traen fondo propio) ────────────── */
+figure {
+  margin: 1.8rem 0;
+  background: #f4f6f9;
+  border: 1px solid var(--linea);
+  border-radius: 12px;
+  padding: .9rem;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
+figure img { width: 100%; height: auto; display: block; border-radius: 7px; }
+figcaption {
+  margin-top: .85rem; padding: 0 .35rem;
+  font-size: .92rem; color: #45505e;
+  border-top: 1px dashed #cdd5de; padding-top: .75rem;
+}
+figcaption b { color: #1b2430; }
+
+/* Callout "qué demuestra" ───────────────────────────────────────────────── */
+.demuestra {
+  background: rgba(87, 211, 154, .07);
+  border: 1px solid rgba(87, 211, 154, .28);
+  border-left: 4px solid var(--ok);
+  border-radius: 10px;
+  padding: 1.05rem 1.3rem;
+  margin: 1.5rem 0;
+}
+.demuestra .lbl {
+  font-family: var(--mono); font-weight: 700; color: var(--ok);
+  text-transform: uppercase; letter-spacing: .08em; font-size: .73rem;
+  display: block; margin-bottom: .35rem;
+}
+
+.nota {
+  background: rgba(230, 196, 92, .07);
+  border: 1px solid rgba(230, 196, 92, .28);
+  border-left: 4px solid var(--aviso);
+  border-radius: 10px;
+  padding: .95rem 1.2rem;
+  margin: 1.5rem 0;
+  font-size: .97rem;
+}
+
+/* Tarjetas de cifras clave ─────────────────────────────────────────────── */
+.cifras {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem; margin: 1.6rem 0;
+}
+.cifra {
+  background: var(--papel);
+  border: 1px solid var(--linea);
+  border-top: 3px solid var(--acento2);
+  border-radius: 10px; padding: 1.05rem 1.15rem;
+}
+.cifra .v { font-size: 1.7rem; font-weight: 700; color: var(--titulo); font-variant-numeric: tabular-nums; }
+.cifra .k { font-size: .82rem; color: var(--tinta-soft); margin-top: .2rem; font-family: var(--mono); }
+
+/* Tablas ───────────────────────────────────────────────────────────────── */
+table {
+  width: 100%; border-collapse: collapse; margin: 1.5rem 0;
+  font-size: .96rem; background: var(--papel);
+  border: 1px solid var(--linea); border-radius: 10px; overflow: hidden;
+}
+th, td { text-align: left; padding: .65rem .9rem; border-bottom: 1px solid var(--linea); }
+th { background: var(--papel-2); color: var(--titulo); font-family: var(--mono);
+     font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+tbody tr:last-child td { border-bottom: none; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Código ───────────────────────────────────────────────────────────────── */
+code {
+  background: #222b37; color: #e3ebf4;
+  padding: .13em .42em; border-radius: 5px;
+  font-family: var(--mono); font-size: .88em;
+}
+pre {
+  background: var(--code-bg); color: var(--code-fg);
+  padding: 1.1rem 1.3rem; border-radius: 10px; overflow-x: auto;
+  border: 1px solid var(--linea);
+  font-family: var(--mono); font-size: .9rem; line-height: 1.65;
+}
+pre code { background: none; color: inherit; padding: 0; }
+
+footer.pie {
+  margin-top: 4.5rem; padding-top: 1.3rem;
+  border-top: 1px solid var(--linea);
+  color: var(--tinta-soft); font-size: .87rem;
+}
+footer.pie a { color: var(--acento); }
+
+
+/* ── Barra de navegación del sitio (añadida por inject_topnav.py) ────────── */
+.topnav {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: .65rem clamp(1rem, 4vw, 2.2rem);
+  background: rgba(13, 17, 23, .86); backdrop-filter: blur(9px);
+  border-bottom: 1px solid var(--linea);
+}
+.topnav .brand { font-family: var(--mono); font-weight: 700; font-size: .9rem;
+  color: var(--titulo); text-decoration: none; white-space: nowrap; }
+.topnav .brand b { color: var(--acento); }
+.topnav .links { display: flex; gap: .25rem; margin-left: auto; flex-wrap: wrap; }
+.topnav .links a { color: var(--tinta-soft); text-decoration: none; font-size: .9rem;
+  padding: .35rem .8rem; border-radius: 7px; transition: background .15s, color .15s; }
+.topnav .links a:hover { color: var(--titulo); background: var(--papel-2); text-decoration: none; }
+.topnav .links a.active { color: var(--acento); background: rgba(88, 176, 236, .12); }
+@media (max-width: 680px) {
+  .topnav { gap: .6rem; padding: .55rem .9rem; }
+  .topnav .brand { font-size: .8rem; }
+  .topnav .links a { padding: .3rem .55rem; font-size: .82rem; }
+}

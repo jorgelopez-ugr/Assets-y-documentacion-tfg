@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>simulacion.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>simulacion.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Parcialmente desactualizado (revisado 2026-06-27)</div><div class="callout-body"><p>El listado de la clase y de <code>tick()</code> es <strong>anterior</strong> a varias features ya
+mergeadas. El <code>tick()</code> real ejecuta <code>aplicarViento → buoyancy → presión →
+advección → reacción(+enfriamiento) → adyacencia → sostener</code>, y
+<code>resolverPresion</code>/<code>advectar</code> operan <strong>in-place sobre buffers</strong> (no devuelven
+un grid por valor — optimización MVP5/6). La clase incluye además modo de
+física (<code>set_modo</code>/<code>ModoFisica</code>, #113), cortafuegos (<code>pintar_firebreak</code>/
+<code>deshacer_firebreak</code>), viento (<code>set_viento</code>, #74), <code>Profile</code> de tiempos y
+OpenMP. Flujo de fases vigente en <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> y, sobre todo, en
+<a href="motor-de-fuego-las-operaciones-del-tick-y-como-se-combinan.html">Motor de fuego — las operaciones del tick y cómo se combinan</a>.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/simulacion.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code>
+<strong>Tests:</strong> <code>engine/test_simulacion.cpp</code> (18 asserts)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Orquesta el bucle de cuadrantes activos. Es la lógica central del rediseño
+y la única clase con estado dinámico (la lista de cuadrantes activos y la
+referencia mutable a <code>WorldData</code>).</p>
+<hr>
+<h2 id="la-clase-simulacion">La clase <code>Simulacion</code></h2>
+<pre><code class="language-cpp">class Simulacion {
+public:
+    static constexpr float UMBRAL_ACTIVACION  = 100.0f;  // °C en celda de borde
+    static constexpr float TEMP_IGNICION      = 800.0f;  // °C inyectados al ignitar
+    static constexpr float K_REACCION_DEFAULT = 0.1f;
+    static constexpr float DT_DEFAULT         = 0.5f;
+
+    explicit Simulacion(WorldData&amp; w);
+
+    void activar(uint32_t id);                            // aloca SubGrid + FUEL/AIR
+    void ignite(float wx, float wz);                      // BURNING en (wx, wz)
+    void tick(float dt = DT_DEFAULT, float k = K_REACCION_DEFAULT);
+    void reset();                                         // libera todo
+
+    const std::set&lt;uint32_t&gt;&amp; activos() const;
+    const WorldData&amp; world() const;
+
+private:
+    WorldData&amp; world_;
+    std::set&lt;uint32_t&gt; activos_;
+
+    void propagar_halos();
+    void evaluar_activacion();
+    void evaluar_desactivacion();
+    static void sostener_burning(SubGrid&amp; g);
+
+    static int direccion_x(const Cuadrante&amp; a, const Cuadrante&amp; b);
+    static int direccion_z(const Cuadrante&amp; a, const Cuadrante&amp; b);
+    static void rango_borde(int dx, int dy,
+                            int&amp; xmin, int&amp; xmax,
+                            int&amp; ymin, int&amp; ymax);
+    static float max_temp_borde(const Cuadrante&amp; a, int dx, int dy);
+    static void copiar_borde(Cuadrante&amp; a, Cuadrante&amp; b, int dx, int dy);
+};
+</code></pre>
+<hr>
+<h2 id="metodos-publicos">Métodos públicos</h2>
+<h3 id="activarid"><code>activar(id)</code></h3>
+<p>Aloca el <code>SubGrid</code> del cuadrante (50.000 celdas) y marca:</p>
+<ul>
+<li>En la celda de superficie <code>(cx, cz, y_superficie[idx])</code>: <code>state = FUEL</code>,
+  <code>fuel_coefficient</code> copiado del Cuadrante.</li>
+<li>El resto: queda como <code>Celda{}</code> por defecto, es decir <code>state = AIR</code>,
+  todos los floats a 0.</li>
+</ul>
+<p>Si el cuadrante ya estaba <code>ACTIVO</code>, no hace nada (idempotente). Añade el
+id al <code>set</code> de activos.</p>
+<h3 id="ignitewx-wz"><code>ignite(wx, wz)</code></h3>
+<p>Convierte coordenadas mundiales a (cuadrante, celda local) y enciende la
+celda de superficie correspondiente:</p>
+<pre><code class="language-cpp">qx = (int)wx / CELDAS_QUAD_X;       // 50
+qz = (int)wz / CELDAS_QUAD_Z;       // 50
+cx = (int)wx - qx * CELDAS_QUAD_X;
+cz = (int)wz - qz * CELDAS_QUAD_Z;
+</code></pre>
+<p>Activa el cuadrante (si no lo estaba), busca <code>y_superficie[cz * 50 + cx]</code>,
+y pone esa celda en <code>BURNING</code> con <code>temperature = 800.0</code> y <code>reaction = 1.0</code>.</p>
+<h3 id="tickdt-k"><code>tick(dt, k)</code></h3>
+<p>Un tick completo. Ver el flujo paso a paso en <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a>.</p>
+<pre><code class="language-cpp">void tick(float dt, float k) {
+    for (uint32_t id : activos_) {
+        Cuadrante&amp; c = world_.cuadrantes[id];
+        aplicarBuoyancy(c.grid);
+        c.grid = resolverPresion(c.grid);
+        c.grid = advectar(c.grid, dt);
+        aplicarReaccion(c.grid, k, dt);
+        sostener_burning(c.grid);
+    }
+    propagar_halos();
+    evaluar_desactivacion();   // primero: libera muertos
+    evaluar_activacion();      // después: enciende vivos
+}
+</code></pre>
+<h3 id="reset"><code>reset()</code></h3>
+<p>Marca todos los cuadrantes activos como <code>INACTIVO</code>, libera sus SubGrids
+(<code>cells.clear()</code>) y vacía el set de activos.</p>
+<hr>
+<h2 id="metodos-privados">Métodos privados</h2>
+<h3 id="sostener_burninggrid-fuente-de-calor-sostenida"><code>sostener_burning(grid)</code> — fuente de calor sostenida</h3>
+<pre><code class="language-cpp">for (Celda&amp; c : grid.cells) {
+    if (c.state == EstadoCelda::BURNING &amp;&amp; c.temperature &lt; TEMP_IGNICION) {
+        c.temperature = TEMP_IGNICION;
+    }
+}
+</code></pre>
+<p>Sin esto, una celda BURNING termina con temperatura cero al cabo de unos
+ticks porque la flotabilidad y la advección la drenan. La reinyección
+modela que una celda ardiendo es un emisor sostenido mientras tenga
+combustible.</p>
+<h3 id="propagar_halos-intercambio-de-bordes"><code>propagar_halos()</code> — intercambio de bordes</h3>
+<p>Para cada par de cuadrantes activos adyacentes (procesado una sola vez por
+pareja con <code>if (nid &lt;= id) continue</code>), llama a <code>copiar_borde(a, b, dx, dy)</code>
+si la dirección es estrictamente cardinal (no diagonal).</p>
+<p><code>copiar_borde</code> promedia simétricamente <code>temperature</code>, <code>density</code> y
+<code>reaction</code> entre la columna borde de A y la columna borde de B.</p>
+<h3 id="evaluar_activacion-la-cascada"><code>evaluar_activacion()</code> — la cascada</h3>
+<p>Para cada cuadrante activo, mira sus vecinos inactivos. Calcula la
+temperatura máxima en el borde de A que mira hacia el vecino. Si supera
+<code>UMBRAL_ACTIVACION = 100 °C</code>, llama a <code>activar(vecino)</code>.</p>
+<p>Resultado: el fuego se propaga a un nuevo cuadrante en cuanto la
+temperatura del borde de un cuadrante activo supera el umbral.</p>
+<h3 id="evaluar_desactivacion-libera-muertos"><code>evaluar_desactivacion()</code> — libera muertos</h3>
+<pre><code class="language-cpp">for (uint32_t id : activos_) {
+    bool actividad = false;
+    for (const Celda&amp; cell : c.grid.cells) {
+        if (cell.state == EstadoCelda::BURNING ||
+            cell.temperature &gt; UMBRAL_ACTIVACION) {
+            actividad = true; break;
+        }
+    }
+    if (!actividad) /* desactivar */;
+}
+</code></pre>
+<p>La condición de "actividad" incluye <strong>temperatura &gt; UMBRAL_ACTIVACION</strong>
+además de BURNING. Esto es esencial: un cuadrante recién activado por
+<code>evaluar_activacion</code> todavía no tiene celdas BURNING, solo FUEL con calor
+recibido por halos. Si solo se mirase BURNING, se desactivaría
+inmediatamente y al re-activarse el SubGrid se reinicializaría perdiendo
+los halos. Ver: <a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a>.</p>
+<hr>
+<h2 id="orden-importa-desactivar-antes-de-activar">Orden importa: desactivar <strong>antes</strong> de activar</h2>
+<pre><code class="language-cpp">evaluar_desactivacion();   // primero
+evaluar_activacion();      // después
+</code></pre>
+<p>Si fueran al revés, un vecino recién activado (sin BURNING todavía) se
+desactivaría en el mismo tick, abortando la propagación.</p>
+<p>Con este orden, cualquier cuadrante recién activado en este tick sobrevive
+hasta el siguiente, dándole oportunidad a:</p>
+<ul>
+<li>recibir halos de su vecino activo,</li>
+<li>ignitar sus FUEL al recibir calor &gt; 100 °C en el siguiente <code>aplicarReaccion</code>.</li>
+</ul>
+<hr>
+<h2 id="tests-del-modulo">Tests del módulo</h2>
+<p><code>engine/test_simulacion.cpp</code> cubre 18 asserts:</p>
+<ul>
+<li><code>activar</code> inicializa correctamente FUEL/AIR según <code>y_superficie</code>.</li>
+<li><code>activar</code> es idempotente.</li>
+<li><code>ignite</code> deja la celda objetivo en BURNING con TEMP_IGNICION.</li>
+<li><strong>Propagación a vecino en 1 tick</strong>: ignición en el borde derecho de un
+  cuadrante hace que <code>evaluar_activacion</code> active al vecino derecho.</li>
+<li><code>evaluar_desactivacion</code> libera cuadrantes sin actividad y borra su grid.</li>
+<li><code>reset</code> deja el estado limpio.</li>
+</ul>
+<p>Ejecución:</p>
+<pre><code class="language-bash">bash engine/test_simulacion.sh
+</code></pre>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

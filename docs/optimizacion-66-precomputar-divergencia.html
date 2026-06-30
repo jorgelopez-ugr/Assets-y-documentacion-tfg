@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#66` — Precomputar divergencia fuera de Jacobi · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#66` — Precomputar divergencia fuera de Jacobi</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="optimizacion-63-parada-temprana-jacobi.html">Optimización — 63 — Parada temprana Jacobi</a> · <a href="optimizacion-64-paralelismo-openmp.html">Optimización — 64 — Paralelismo OpenMP</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Lift the loop invariant</strong>: <code>calcularDivergencia(g, x, y, z)</code> se llamaba
+  dentro del bucle de iteraciones Jacobi pese a que la velocidad <strong>NO</strong>
+  cambia durante Jacobi (lo dice el propio comentario de <code>presion.h</code>).
+  Ahora se precomputa una sola vez por llamada a <code>resolverPresion</code>.</li>
+<li><strong>Latencia de presión secuencial: 40.99 → 21.78 ms/tick</strong> a 100 ticks.
+  Drop <strong>-46.9 %</strong>, criterio del issue era ≥15 %. <strong>Cumple ampliamente.</strong></li>
+<li><strong>Bit-idéntico al baseline post-#63</strong>: BURNING/SMOKE/iters por celda
+  exactamente iguales. <code>test_determinismo_numerico_adveccion</code> pasa sin
+  tocar el snapshot. No hay cambio numérico, solo eliminación de trabajo
+  redundante.</li>
+<li><strong>Cero regresiones</strong>: 44 API + 22+32+18 motor + 3 binarios.</li>
+<li><strong>Re-bench de #64</strong>: con la divergencia precomputada, el speedup de
+  paralelismo a 50 k BURNING sube ligeramente (1.10× con 4 hilos vs
+  baseline post-#63), pero <strong>el 4× sigue sin alcanzarse</strong>. El cuello de
+  botella se ha trasladado a I/O HTTP / serialización; el cómputo ya no
+  domina el <code>/tick</code> total.</li>
+</ul>
+<h2 id="por-que-esta-issue-se-priorizo-antes-de-65">Por qué esta issue se priorizó antes de #65</h2>
+<p>Originalmente el orden era #64 (paralelismo) → #65 (validación física) →</p>
+<h1 id="66-memoria-opcional-tras-64">66 (memoria, opcional). Tras <a href="optimizacion-64-paralelismo-openmp.html">#64</a></h1>
+<p>quedó claro que el paralelismo no paga porque cada cuadrante (1.6 MB de
+grid) satura L3 cuando varios hilos trabajan en paralelo. El comentario
+de <code>presion.h</code> apuntaba directamente a un trabajo redundante:</p>
+<blockquote>
+<p>"La velocidad NO cambia durante el solver Jacobi, así que la divergencia
+es la misma en cada iteración."</p>
+</blockquote>
+<p>Pero <code>calcularDivergencia(g, x, y, z)</code> se llamaba dentro del bucle de
+iteraciones — recomputábamos lo mismo ~18 veces (avg iters/call tras #63).
+Cada recomputación gasta 6 lecturas de <code>velocity</code> por celda, y la
+velocidad está dispersa por el grid (50000 celdas × 24 bytes Vec3 ≈
+1.2 MB del grid). Levantar la invariante:</p>
+<ul>
+<li>Reduce las <strong>operaciones de memoria por iter en ~38 %</strong> (eliminamos 6
+  lecturas de velocity, añadimos 1 lectura de divergencia precomputada).</li>
+<li>Mejora la <strong>localidad de caché</strong>: <code>div_buf[i]</code> se lee linealmente
+  durante Jacobi. Antes los reads de velocidad iban a cells contiguas
+  que se compartían con otros campos de Celda (struct of arrays implícito
+  pero mezclado).</li>
+<li><strong>Bit-idéntico</strong>: la divergencia es función del estado de velocidad al
+  inicio de la llamada, idéntica en todas las iteraciones. Ya iba a serlo.</li>
+</ul>
+<h2 id="diseno">Diseño</h2>
+<h3 id="presionhresolverpresion"><code>presion.h::resolverPresion</code></h3>
+<p>Firma nueva:</p>
+<pre><code class="language-cpp">int resolverPresion(SubGrid&amp; g, SubGrid&amp; buf_a, SubGrid&amp; buf_b,
+                    std::vector&lt;float&gt;&amp; div_buf,
+                    int iteraciones = 30, float epsilon = 0.5f);
+</code></pre>
+<p><code>div_buf</code> lo provee el llamante. Tamaño mínimo: <code>g.cells.size()</code> (50000
+floats = 200 KB). Si llega más pequeño se redimensiona — coste amortizado.</p>
+<p>Pre-loop nuevo (un solo barrido):</p>
+<pre><code class="language-cpp">std::size_t i = 0;
+for (int z = 0; z &lt; g.sizeZ; z++) {
+  for (int y = 0; y &lt; g.sizeY; y++) {
+    for (int x = 0; x &lt; g.sizeX; x++) {
+      buf_a.cells[i].pressure = g.cells[i].pressure;  // warm-start
+      div_buf[i] = calcularDivergencia(g, x, y, z);    // ← una vez
+      ++i;
+    }
+  }
+}
+</code></pre>
+<p>El orden <code>(z, y, x)</code> con <code>x</code> interior coincide exactamente con la
+indexación lineal <code>index(x,y,z) = x + sizeX*(y + sizeY*z)</code>, así que <code>i</code>
+incrementa monotónicamente y podemos hacer <code>cells[i]</code> y <code>div_buf[i]</code>
+sin recalcular el índice. Es la misma micro-optimización aplicada al
+bucle interno de Jacobi.</p>
+<p>Bucle Jacobi: en lugar de <code>float divergencia = calcularDivergencia(g, x, y, z);</code>
+ahora <code>(... - div_buf[i]) / 6.0f</code>.</p>
+<h3 id="simulacionh"><code>simulacion.h</code></h3>
+<p>Nuevo miembro:</p>
+<pre><code class="language-cpp">std::vector&lt;std::vector&lt;float&gt;&gt; bufs_divergencia_;
+</code></pre>
+<p>Replicado por hilo OpenMP, igual que los otros 4 buffers. Inicializado
+lazy en <code>asegurar_buffers_por_hilo</code>. En el cuerpo del bucle paralelo:</p>
+<pre><code class="language-cpp">int iters = resolverPresion(c.grid,
+                            bufs_presion_a_[tid],
+                            bufs_presion_b_[tid],
+                            bufs_divergencia_[tid]);
+</code></pre>
+<p>200 KB extra por hilo, despreciable frente a los 6.4 MB de los buffers
+de presión y advección.</p>
+<h2 id="resultado">Resultado</h2>
+<h3 id="bench-secuencial-a-100-ticks-criterio-del-issue">Bench secuencial a 100 ticks (criterio del issue)</h3>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">post-#63</th>
+<th style="text-align: right;">post-#66</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión</td>
+<td style="text-align: right;">40.99 ms/tick</td>
+<td style="text-align: right;"><strong>21.78 ms/tick</strong></td>
+<td style="text-align: right;"><strong>-46.9 %</strong> ✓</td>
+</tr>
+<tr>
+<td>Total CPU sum</td>
+<td style="text-align: right;">68.47 ms/tick</td>
+<td style="text-align: right;">48.41 ms/tick</td>
+<td style="text-align: right;">-29.3 %</td>
+</tr>
+<tr>
+<td><code>/tick</code> mediana</td>
+<td style="text-align: right;">204.02 ms</td>
+<td style="text-align: right;">182.23 ms</td>
+<td style="text-align: right;">-10.7 %</td>
+</tr>
+<tr>
+<td>BURNING tick 100</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">bit-idéntico</td>
+</tr>
+<tr>
+<td>SMOKE tick 100</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">bit-idéntico</td>
+</tr>
+<tr>
+<td>Avg iters Jacobi/call</td>
+<td style="text-align: right;">18.07</td>
+<td style="text-align: right;">18.07</td>
+<td style="text-align: right;">bit-idéntico</td>
+</tr>
+</tbody>
+</table>
+<p>Criterio del issue (&gt;15 % drop en presión): <strong>cumplido con margen</strong>.</p>
+<h3 id="bench-a-160-ticks-re-evaluacion-de-64-con-divergencia-precomputada">Bench a 160 ticks — re-evaluación de #64 con divergencia precomputada</h3>
+<p>Wall-clock <code>/tick</code> máximo en tick 160 (57 219 BURNING):</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">post-#63</th>
+<th style="text-align: right;">post-#66</th>
+<th style="text-align: right;">speedup vs post-#63 1-thread</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo</td>
+<td style="text-align: right;">10693 ms</td>
+<td style="text-align: right;">10176 ms</td>
+<td style="text-align: right;">1.05×</td>
+</tr>
+<tr>
+<td>4 hilos, dynamic</td>
+<td style="text-align: right;">9665 ms</td>
+<td style="text-align: right;"><strong>9738 ms</strong></td>
+<td style="text-align: right;">1.10×</td>
+</tr>
+<tr>
+<td>8 hilos, dynamic</td>
+<td style="text-align: right;">11284 ms</td>
+<td style="text-align: right;"><strong>9633 ms</strong></td>
+<td style="text-align: right;">1.11×</td>
+</tr>
+</tbody>
+</table>
+<p>Lectura: #66 elimina la regresión a 8 hilos. Antes, ir de 4 a 8 hilos
+EMPEORABA (de 9665 a 11284). Tras #66, 8 hilos vuelve a ayudar
+ligeramente (9633 &lt; 9738). Pero el speedup absoluto sigue siendo
+modesto: <strong>1.11× a 8 hilos vs el secuencial post-#63</strong>, lejísimos del
+4× exigido por #64.</p>
+<h3 id="por-que-seguimos-sin-llegar-al-4-analisis-del-cuello-de-botella">Por qué seguimos sin llegar al 4× — análisis del cuello de botella</h3>
+<p><code>/tick</code> máximo en tick 160 ≈ <strong>10 segundos</strong>. Si miramos qué consume ese
+tiempo:</p>
+<table>
+<thead>
+<tr>
+<th>Fase</th>
+<th style="text-align: right;">post-#66 1-thread (160 ticks)</th>
+<th style="text-align: right;">% del /tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión (motor)</td>
+<td style="text-align: right;">134 ms/tick avg</td>
+<td style="text-align: right;">~1.3 %</td>
+</tr>
+<tr>
+<td>Advección (motor)</td>
+<td style="text-align: right;">98 ms/tick avg</td>
+<td style="text-align: right;">~1.0 %</td>
+</tr>
+<tr>
+<td>Resto motor</td>
+<td style="text-align: right;">~9 ms/tick</td>
+<td style="text-align: right;">~0.1 %</td>
+</tr>
+<tr>
+<td><strong>I/O motor (CHANGED por stdout)</strong></td>
+<td style="text-align: right;">resto</td>
+<td style="text-align: right;"><strong>~30-40 %</strong></td>
+</tr>
+<tr>
+<td><strong>HTTP / JSON / Python state diff</strong></td>
+<td style="text-align: right;">resto</td>
+<td style="text-align: right;"><strong>resto</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A tick 160 el motor emite 21 768 líneas CHANGED por stdout, la API las
+parsea, las pasa al state, calcula diffs, las serializa a JSON, las
+manda por HTTP. El cómputo físico es <strong>una fracción minúscula</strong> del
+<code>/tick</code> wall-clock a este tamaño.</p>
+<p><strong>El paralelismo del motor ya no puede mover la aguja</strong> porque el
+cómputo no es el dominante. Para llegar al 4× a 50 k BURNING haría
+falta atacar el pipeline I/O completo:</p>
+<ol>
+<li><strong>Reducir CHANGED emitidos</strong> (parcialmente abordado por #59 — filtrar
+   diffs por transición de estado renderable). A tick 160 todavía
+   se emiten ~22k líneas/tick — mucho.</li>
+<li><strong>Salir del protocolo texto stdin/stdout</strong>. Un protocolo binario o
+   compartir memoria evitaría parsear 22k líneas por tick.</li>
+<li><strong>Mover cálculo de diffs al motor C++</strong>, en lugar de en Python. La
+   API solo recibiría los diffs ya formateados.</li>
+</ol>
+<p>Estas optimizaciones están claramente fuera del scope del milestone
+actual. Ver "Trabajo futuro" en <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a>.</p>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/presion.h</code>:</li>
+<li>Firma nueva con <code>std::vector&lt;float&gt;&amp; div_buf</code>.</li>
+<li>Pre-loop barre <code>(z,y,x)</code> rellenando <code>buf_a.pressure</code> (warm-start) y
+    <code>div_buf[i]</code> (divergencia) simultáneamente con un único índice
+    lineal.</li>
+<li>Bucle Jacobi sustituye <code>calcularDivergencia(...)</code> por <code>div_buf[i]</code>.
+    Comentario explicando la invariante.</li>
+<li><code>engine/simulacion.h</code>:</li>
+<li>Nuevo <code>bufs_divergencia_</code> (vector<vector\<float>>, per-hilo).</li>
+<li>Inicialización en constructor (1 hilo) y en <code>asegurar_buffers_por_hilo</code>.</li>
+<li><code>tick()</code> pasa <code>bufs_divergencia_[tid]</code> a <code>resolverPresion</code>.</li>
+</ul>
+<h2 id="tests">Tests</h2>
+<p>Cero cambios necesarios — el comportamiento numérico es idéntico al
+baseline post-#63, así que todos los snapshots y los counts se mantienen.</p>
+<ul>
+<li>44/44 API.</li>
+<li><code>engine/test_main.sh</code> 22 OK.</li>
+<li><code>engine/test_simulacion.sh</code> 32 OK (incluido el snapshot del
+  determinismo numérico, pasa con los mismos floats que post-#63).</li>
+<li><code>engine/test_world_loader.sh</code> 18 OK.</li>
+<li><code>test_buoyancy/reaccion/serializar</code> OK.</li>
+</ul>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="66-entrega-su-acceptance-al-100-y-como-bonus-restaura-el-escalado">66 entrega su acceptance al 100 % y, como bonus, restaura el escalado</h1>
+<p>positivo a 8 hilos en #64 (que antes degradaba). Pero el milestone
+<strong>no llegará al 4× a 50 k BURNING</strong> sin atacar I/O — el cómputo ya no
+es el dominante.</p>
+<p>Próximo movimiento: <strong>#65 (validación física)</strong> ahora con la versión
+final del motor (post-#63 + #64 + #66). Después <strong>#67 (documentación)</strong>
+para reportar resultados al milestone, incluyendo la lectura honesta:
+<em>el límite del paralelismo y la reducción de coste de cómputo no
+permite el 4× con la arquitectura I/O actual; los siguientes hitos del
+proyecto deben atacar el pipeline de comunicación motor↔API↔Godot.</em></p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

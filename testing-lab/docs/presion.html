@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Presión e incompresibilidad — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · el paso de fluido (1 de 2) · <a href="index.html">índice</a></p>
+    <h1>Presión e incompresibilidad</h1>
+    <p class="sub">La operación que parecía una caja negra: medir la divergencia,
+      resolver ∇²p = div con Jacobi y restar el gradiente de presión. Aquí se ve
+      <strong>iteración a iteración</strong> qué hace el solver y, al final, para
+      qué sirve.</p>
+  </header>
+
+  <div class="nota">
+    <strong>Cómo leer esta página.</strong> Vamos de lo pequeño a lo grande:
+    (1) qué es la <em>divergencia</em>, (2) qué hace la <em>proyección</em>,
+    (3) cómo trabaja el <em>solver Jacobi</em> por dentro, y (4) <em>para qué
+    sirve</em> todo esto en el fuego. Cada figura se genera con la función real
+    del motor (<code>engine/presion.h</code>), sin reimplementar nada.
+  </div>
+
+  <!-- ═══════════════════════════ 1 · DIVERGENCIA ═══════════════════════════ -->
+  <h2>1 · El problema: el campo no es incompresible</h2>
+  <p>Un fluido incompresible cumple una regla simple: <strong>en cada celda, lo
+    que entra de fluido tiene que salir</strong>. Ni se acumula ni desaparece. La
+    medida de cuánto se incumple esa regla es la <strong>divergencia</strong>:</p>
+
+  <div class="eq">
+    div = (v<sub>x</sub><sup>der</sup> − v<sub>x</sub><sup>izq</sup>)
+        + (v<sub>y</sub><sup>arr</sup> − v<sub>y</sub><sup>abj</sup>)
+        + (v<sub>z</sub><sup>frente</sup> − v<sub>z</sub><sup>atrás</sup>)
+    <small>diferencia de velocidad entre vecinos opuestos, en cada eje</small>
+  </div>
+
+  <p>Tras aplicar la <a href="buoyancy.html">flotabilidad</a>, el campo de
+    velocidad NO cumple la condición: el gas caliente añade empuje hacia arriba y
+    eso crea zonas donde el fluido "aparece" o "se escapa". Para verlo con los
+    ojos, montamos un campo idealizado con una <strong>fuente</strong> (sale
+    fluido) y un <strong>sumidero</strong> (entra fluido):</p>
+
+  <figure>
+    <img src="../out/presion_divergencia.png" alt="Flechas de velocidad sobre el mapa de divergencia: fuente y sumidero">
+    <figcaption>
+      Las <b>flechas</b> son la velocidad; el <b>color</b> es la divergencia.
+      <b>Rojo</b> = la velocidad apunta hacia afuera → el fluido se escapa
+      (div&nbsp;&gt;&nbsp;0). <b>Azul</b> = apunta hacia adentro → se acumula
+      (div&nbsp;&lt;&nbsp;0). Donde el flujo es paralelo, la divergencia es cero.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La divergencia es un número por celda que dice <strong>cuánto fluido neto
+    entra o sale</strong>. Un campo incompresible la tiene a cero en todas partes.
+    El nuestro, tras la buoyancy, no — y por eso hay que corregirlo.
+  </div>
+
+  <!-- ═══════════════════════════ 2 · PROYECCIÓN ═══════════════════════════ -->
+  <h2>2 · La proyección: restar el gradiente de presión</h2>
+  <p>¿Cómo se quita la divergencia sin destruir el flujo? Se introduce un campo de
+    <strong>presión</strong> cuyo gradiente, restado a la velocidad, cancela
+    justo la parte que sobra. Ese campo es la solución de la ecuación de Poisson
+    <strong>∇²p = div</strong>. Una vez resuelto:</p>
+
+  <div class="eq">
+    v &nbsp;−=&nbsp; ∇p / 2
+    <small>a cada celda se le resta el gradiente de presión → el fluido deja de acumularse</small>
+  </div>
+
+  <p>Aplicando el solver real del motor a aquel campo fuente+sumidero:</p>
+
+  <figure>
+    <img src="../out/presion_proyeccion.png" alt="Antes, presión y después de la proyección">
+    <figcaption>
+      <b>1 · Antes:</b> el campo divergente (fuente roja, sumidero azul).
+      <b>2 · Presión:</b> la solución de ∇²p = div — alta donde el fluido se
+      acumula, baja donde se escapa. <b>3 · Después:</b> tras restar ∇p, la
+      divergencia (misma escala de color) casi desaparece.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La presión actúa como un "moderador": empuja desde donde sobra fluido hacia
+    donde falta, hasta equilibrar las cuentas. Tras la corrección, la divergencia
+    cae <strong>~61&nbsp;%</strong>.
+  </div>
+
+  <div class="nota">
+    <strong>Matiz honesto (lo descubrió el propio lab).</strong> La divergencia
+    se reduce mucho pero <em>no se anula del todo</em>, y en el centro de cada foco
+    incluso cambia de signo. No es un bug: es la firma del <strong>desacople
+    par-impar</strong> de la rejilla <em>collocated</em> del motor, donde la
+    velocidad y la presión viven en el mismo punto. El gradiente central
+    (p<sub>der</sub>−p<sub>izq</sub>)/2 se salta la celda central, así que celdas
+    pares e impares quedan parcialmente desacopladas y el solver no puede limpiar
+    el último resto. Lo que <strong>sí</strong> converge limpiamente es el sistema
+    de Poisson — lo vemos justo abajo.
+  </div>
+
+  <!-- ═══════════════════════════ 3 · JACOBI ═══════════════════════════════ -->
+  <h2 id="jacobi">3 · El solver Jacobi, por dentro</h2>
+  <p>La ecuación ∇²p = div no se resuelve de un tirón en 3D: se resuelve
+    <strong>iterando</strong>. El método de Jacobi es de una simplicidad
+    desarmante — cada iteración pone la presión de una celda como el promedio de
+    sus 6 vecinas, ajustado por la divergencia local:</p>
+
+  <div class="eq">
+    p<sub>nueva</sub> = ( p<sub>der</sub> + p<sub>izq</sub> + p<sub>arr</sub> +
+    p<sub>abj</sub> + p<sub>frente</sub> + p<sub>atrás</sub> − div ) / 6
+    <small>se repite hasta que la presión deja de cambiar (converge)</small>
+  </div>
+
+  <p>Aquí está lo que nunca se ve en una fórmula. Colocamos una fuente compacta
+    (divergencia casi puntual en el centro) y capturamos la presión tras 1, 2, 4,
+    … iteraciones:</p>
+
+  <figure>
+    <img src="../out/presion_jacobi.png" alt="El campo de presión tras 1, 2, 4 … iteraciones, residuo y corte 1D">
+    <figcaption>
+      <b>Arriba:</b> el "pozo" de presión tras cada nº de iteraciones — empieza
+      en un punto y se va llenando hacia afuera. <b>Abajo izquierda:</b> el
+      residuo de Poisson cayendo (converge). <b>Abajo derecha:</b> un corte por el
+      centro: cada iteración hace la "tienda" un poco más profunda y, sobre todo,
+      <b>una celda más ancha</b>.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/presion_jacobi.gif" alt="Animación del pozo de presión formándose iteración a iteración">
+    <figcaption>El mismo proceso, animado: el pozo de presión formándose barrido
+      a barrido.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    <p style="margin-top:.2rem">La clave para entender Jacobi:</p>
+    <ol style="margin:.2rem 0 .2rem 1.1rem">
+      <li>Como cada celda solo mira a sus <strong>vecinos inmediatos</strong>, la
+        información de la divergencia viaja <strong>una celda por iteración</strong>.
+        Por eso el pozo "crece" hacia afuera y por eso hace falta repetir muchas
+        veces: para que la señal llegue de un extremo al otro de la fuente.</li>
+      <li>El residuo baja de forma <strong>monótona</strong> → el método converge.
+        En el motor se corta en 30 iteraciones (o antes, si ya casi no cambia).</li>
+      <li>Actualizar cada celda solo con valores de la iteración <em>anterior</em>
+        hace a Jacobi <strong>trivialmente paralelizable</strong> — todas las
+        celdas a la vez, sin dependencias. Es la razón de elegirlo.</li>
+    </ol>
+  </div>
+
+  <!-- ═══════════════════════════ 4 · CAPSTONE ═════════════════════════════ -->
+  <h2 id="capstone">4 · ¿Para qué sirve? El empuje que transporta el calor</h2>
+  <p>Hasta aquí, "limpiar la divergencia" suena abstracto. Esta es la razón de
+    fondo: el gradiente de presión que genera el gas caliente al ascender
+    <strong>empuja lateralmente</strong> el fluido vecino, y ese empuje es el que
+    lleva el calor hacia el combustible aún sin arder. Para verlo, comparamos dos
+    mundos idénticos con un foco caliente sostenido en la base — uno con presión y
+    otro sin ella:</p>
+
+  <figure>
+    <img src="../out/demo_fluido.png" alt="Sin presión vs con presión: el calor se reparte lateralmente">
+    <figcaption>
+      Corte vertical. <b>Arriba (sin presión):</b> solo buoyancy + advección — el
+      calor se queda pegado al foco. <b>Abajo (con presión):</b> el orden real del
+      motor (buoyancy → presión → advección) — el gradiente de presión genera una
+      circulación (flechas) que reparte el calor a los lados, <b>~8× más ancho</b>.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/demo_fluido.gif" alt="Animación de los dos mundos, sin y con presión">
+    <figcaption>Los dos mundos evolucionando: sin presión el calor no se mueve;
+      con presión se abre en champiñón hacia el combustible.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La presión no es un trámite matemático: es <strong>el mecanismo de transporte
+    lateral</strong>. La buoyancy sola da empuje vertical aislado; es la
+    incompresibilidad (la presión) la que lo convierte en una circulación
+    coherente que mueve el calor hacia donde hay combustible. Es la frase del TFG,
+    hecha visible.
+  </div>
+
+  <div class="nota">
+    <strong>Bonus honesto.</strong> Si dejas correr este experimento aislado más
+    allá de ~8 ticks, se desestabiliza (ruido de tablero de ajedrez): un foco
+    fuerte sostenido sin enfriamiento ni reacción hace que la buoyancy acumule
+    velocidad y crezca el modo collocated de antes. Eso es justo lo que el
+    <em>producto</em> evita con el modo superficie + enfriamiento ambiente. El
+    experimento se detiene en el champiñón ya formado, que es lo que importa.
+  </div>
+
+  <p style="margin-top:1.5rem">→ Sigue con la tercera operación del paso de fluido:
+    <a href="adveccion.html"><strong>la advección</strong></a>, que es la que de
+    verdad mueve el calor por ese campo de velocidad ya corregido.</p>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/presion_proyeccion.py   # divergencia + proyección
+testing-lab/.venv/bin/python testing-lab/experiments/presion_jacobi.py       # Jacobi por dentro (+ GIF)
+testing-lab/.venv/bin/python testing-lab/experiments/demo_fluido.py          # capstone integrado (+ GIF)
+# tests de cordura:
+testing-lab/.venv/bin/python testing-lab/tests/test_presion_proyeccion.py
+testing-lab/.venv/bin/python testing-lab/tests/test_presion_jacobi.py
+testing-lab/.venv/bin/python testing-lab/tests/test_demo_fluido.py</code></pre>
+
+  <footer class="pie">
+    Funciones reales del motor: <code>calcularDivergencia</code>,
+    <code>resolverPresion</code>, <code>corregirVelocidad</code>
+    (<code>engine/presion.h</code>). El solver Jacobi se captura llamándolo con
+    cap de iteraciones creciente desde un estado limpio, así que los snapshots son
+    fieles a cada iteración. Cortes 2D de un grid 50×50×20.
+  </footer>
+
+</div>
+</body>
+</html>

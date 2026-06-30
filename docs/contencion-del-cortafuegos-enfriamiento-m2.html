@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contención del cortafuegos: enfriamiento ambiente (#131, M2) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Contención del cortafuegos: enfriamiento ambiente (#131, M2)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Por qué el fuego saltaba cualquier cortafuegos y cómo se arregló haciendo que
+la contención dependa del ancho.
+Acompaña a <a href="contrato-de-cortafuegos-auditoria-m2.html">Contrato de Cortafuegos (auditoría M2)</a> y <a href="terraformado-de-cortafuegos-m2.html">Terraformado de cortafuegos (M2)</a>.</p>
+</blockquote>
+<h2 id="el-problema">El problema</h2>
+<p>Al probar #118/#119 en Godot, el fuego <strong>acababa saltando cualquier cortafuegos</strong>,
+sin importar el ancho. Se veía claramente con el humo activado: la primera capa de
+aire caliente (banda K=1) cruzaba la franja.</p>
+<p><strong>Causa raíz</strong>: el motor no tenía <strong>ningún sumidero de calor</strong>. La temperatura se
+inyecta (800 °C en BURNING, sostenida cada tick) y se transporta por advección,
+que es casi conservativa. El umbral de ignición es 100 °C. Sin pérdidas, el calor
+se acumula y el alcance en régimen estacionario es prácticamente infinito: con el
+tiempo, el frente cruza cualquier hueco. No era la temperatura de la chispa — era
+la ausencia de disipación.</p>
+<h2 id="la-decision-contencion-por-ancho-no-binaria">La decisión: contención por ancho (no binaria)</h2>
+<p>Dos formas de arreglarlo:
+- <strong>(descartada) Cortar la banda de aire sobre el cortafuegos</strong> → contención
+  binaria: cualquier línea continua, por fina que sea, detiene el fuego. Poco
+  realista.
+- <strong>(elegida) Enfriamiento ambiente</strong> → el calor decae con la distancia, así que
+  hay una distancia característica de alcance. Cortafuegos más anchos que esa
+  distancia contienen; más finos, se cruzan. Gradiente realista, y on-model con la
+  "difusión por adyacencia" de la propuesta.</p>
+<h2 id="la-implementacion">La implementación</h2>
+<ul>
+<li><code>aplicarReaccion</code> (reaccion.h) enfría las celdas <strong>no ardiendo</strong>:
+  <code>T -= T · enfriamiento · dt</code> (decaimiento exponencial tipo Newton). Las BURNING
+  se re-sostienen a 800 °C aparte (<code>sostener_burning</code>), así que no se enfrían; las
+  inertes (EMPTY/CORTAFUEGOS) ya están a 0 y se saltan.</li>
+<li><strong>Solo en modo superficie</strong>. En volumétrico se pasa <code>enfriamiento = 0</code> →
+  comportamiento bit-idéntico al previo (preserva la demo de la defensa y el test
+  de determinismo numérico).</li>
+<li>Constante <code>ENFRIAMIENTO_SUPERFICIE = 0.6</code> (por segundo; <code>dt = 0.5</code>), miembro
+  tunable vía <code>set_enfriamiento()</code>. Calibrado a ojo; se afina interactivamente en
+  Godot pintando cortafuegos de distinto ancho.</li>
+</ul>
+<h2 id="validacion">Validación</h2>
+<p><code>api/firebreak_validacion.py</code> (70 ticks, ignición central, franja perpendicular):</p>
+<table>
+<thead>
+<tr>
+<th>escenario</th>
+<th>BURNING al otro lado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>sin franja</td>
+<td>18</td>
+</tr>
+<tr>
+<td>estrecha (3 celdas)</td>
+<td>12 (sigue cruzando)</td>
+</tr>
+<tr>
+<td>ancha (30 celdas)</td>
+<td><strong>0 (contiene)</strong></td>
+</tr>
+</tbody>
+</table>
+<p>La franja ancha contiene del todo; la estrecha deja pasar. Antes (sin
+enfriamiento) ambas acababan cruzando. La propagación normal sobre combustible
+contiguo sigue funcionando (104 BURNING en baseline). Test unitario del mecanismo
+en <code>engine/test_simulacion.cpp</code> (<code>test_enfriamiento_ambiente</code>): enfriamiento=0 no
+cambia nada; &gt;0 enfría AIR pero no BURNING ni inertes.</p>
+<h2 id="complemento-ignicion-por-adyacencia-132">Complemento: ignición por adyacencia (#132)</h2>
+<p>Al verificar M3 se vio que con K=1 el quemado salía en <strong>mosaico</strong> (islas de FUEL
+sin quemar que ardían tarde): la banda fina reparte el calor de forma irregular y
+el enfriamiento congela las celdas marginales. Se añadió <strong>ignición por
+adyacencia</strong> (solo superficie): una celda FUEL con un vecino BURNING (8-conexa) se
+enciende → frente <strong>sólido</strong> sobre combustible contiguo. Es la "difusión por
+adyacencia" de la propuesta.</p>
+<p>Cómo conviven los dos mecanismos:
+- <strong>Adyacencia</strong> = completitud del frente sobre combustible contiguo (sin islas).
+  No cruza huecos (CORTAFUEGOS/EMPTY no son FUEL → cortan la adyacencia).
+- <strong>Banda + enfriamiento</strong> = cruce de huecos dependiente del ancho (el calor del
+  aire salta cortafuegos estrechos, no anchos).</p>
+<p>Es decir: el fuego rellena sólido donde hay combustible y la <strong>contención por
+ancho</strong> sigue gobernando si cruza o no un cortafuegos.</p>
+<p><strong>Trade-off</strong>: el frente simétrico <strong>atenúa la asimetría del viento</strong> en
+superficie. El viento es demo física (volumétrico), no producto; los E2E de viento
+se verifican en modo volumétrico. Volumétrico no usa adyacencia → demo y test de
+determinismo intactos.</p>
+<h2 id="quemado-persistente-no-rearder-133">Quemado persistente: no rearder (#133)</h2>
+<p>Quemar una celda solo cambia su estado vivo (BURNING→SMOKE), no el
+<code>fuel_coefficient</code> estático. Como con el enfriamiento los cuadrantes se desactivan
+antes (al pasar el frente), una zona quemada que se reactivaba (el fuego volvía por
+otro lado) se reconstruía como FUEL y <strong>rearder</strong>. Fix: un set <code>quemados_</code> registra
+las celdas SMOKE al desactivar el cuadrante; al reactivarlo se reconstruyen
+<strong>inertes (EMPTY)</strong>, no FUEL. <code>reset()</code> limpia <code>quemados_</code> → el combustible vuelve
+al estado inicial. Así una zona quemada se queda quemada (coherente con la ceniza
+permanente de Godot) salvo reset.</p>
+<h2 id="efectos-secundarios-y-notas">Efectos secundarios y notas</h2>
+<ul>
+<li><strong>Cambia el modelo térmico de superficie</strong> (no solo los cortafuegos): el fuego
+  en general disipa algo de calor. Es más físico, pero las cifras del benchmark de
+  M1 (<code>surface_mode.md</code>) ya no aplican literalmente — habría que re-medir si se
+  quiere una cifra actualizada. El modo volumétrico no cambia.</li>
+<li><strong>Idea de optimización (futuro)</strong>: con enfriamiento, las celdas que caen por
+  debajo del umbral pierden relevancia; se podría desactivar antes los cuadrantes
+  cuyo calor ya se disipó → menos celdas activas → más rápido. Pendiente.</li>
+<li><strong>Calibración pendiente</strong>: el 0.6 es un punto de partida. Si en Godot se quiere
+  que los cortafuegos finos salten más (más realismo) o que contengan con menos
+  ancho, se ajusta <code>ENFRIAMIENTO_SUPERFICIE</code>.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

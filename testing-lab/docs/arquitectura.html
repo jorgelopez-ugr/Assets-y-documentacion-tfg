@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arquitectura — la API como orquestador</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  /* ── Pila de capas (mapa de la arquitectura) ─────────────────────────── */
+  .stack { display: grid; gap: .9rem; margin: 1.8rem 0; }
+  .layer {
+    display: grid; grid-template-columns: 9.5rem 1fr; gap: 1rem; align-items: center;
+    background: var(--papel); border: 1px solid var(--linea);
+    border-left: 4px solid var(--acento); border-radius: 12px; padding: 1rem 1.25rem;
+  }
+  .layer.api { border-left-color: var(--ok); }
+  .layer.motor { border-left-color: var(--acento2); }
+  .layer.datos { border-left-color: var(--aviso); }
+  .layer .who { font-weight: 700; color: var(--titulo); }
+  .layer .who .tag {
+    display: block; font-family: var(--mono); font-size: .7rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; color: var(--tinta-soft); margin-top: .2rem;
+  }
+  .layer .what { color: var(--tinta-soft); font-size: .95rem; }
+  .layer .what b { color: var(--titulo); }
+  .between {
+    text-align: center; font-family: var(--mono); font-size: .8rem; color: var(--tinta-soft);
+    margin: -.35rem 0; letter-spacing: .02em;
+  }
+  .between b { color: var(--acento); }
+
+  /* ── Diagrama de secuencia ANIMADO ("el gif" del recorrido) ───────────── */
+  .seq {
+    position: relative; margin: 1.8rem 0; padding: 1.4rem 1.2rem 1.1rem;
+    background: #0a0e14; border: 1px solid var(--linea); border-radius: 12px; overflow: hidden;
+  }
+  .seq .lanes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; }
+  .seq .lane { text-align: center; }
+  .seq .lane h4 {
+    margin: 0 0 .7rem; font-family: var(--mono); font-size: .82rem; letter-spacing: .04em;
+    color: var(--titulo);
+  }
+  .seq .lane .sub { font-size: .72rem; color: var(--tinta-soft); font-family: var(--mono); }
+  .seq .rail { position: relative; height: 320px; margin-top: .8rem; }
+  .seq .rail::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px;
+    background: var(--linea); transform: translateX(-50%);
+  }
+  /* fila de un mensaje */
+  .msg {
+    position: absolute; left: 6%; right: 6%; height: 2px; background: var(--acento);
+    opacity: .25;
+  }
+  .msg .lbl {
+    position: absolute; top: -1.15rem; font-family: var(--mono); font-size: .72rem;
+    color: var(--tinta-soft); white-space: nowrap;
+  }
+  .msg.ret { background: var(--ok); }
+  .msg.left .lbl { right: 0; text-align: right; }
+  .msg.right .lbl { left: 0; }
+  /* el "paquete" que viaja: una bolita que recorre la secuencia en bucle */
+  .packet {
+    position: absolute; width: 13px; height: 13px; border-radius: 50%;
+    background: var(--acento); box-shadow: 0 0 12px 2px var(--acento);
+    top: -5.5px; left: 0;
+    animation: viaje 7.5s cubic-bezier(.65,0,.35,1) infinite;
+  }
+  /* recorrido: Godot(16%) → API(50%) → Motor(84%) → API(50%) → Godot(16%),
+     bajando por las filas de mensajes (cada fila ≈ 52px). */
+  @keyframes viaje {
+    0%   { left: 16%; top: 6px;   background: var(--acento); box-shadow: 0 0 12px 2px var(--acento); }
+    14%  { left: 50%; top: 6px; }
+    18%  { left: 50%; top: 58px; }
+    32%  { left: 84%; top: 58px; }
+    36%  { left: 84%; top: 110px; background: var(--acento2); box-shadow: 0 0 12px 2px var(--acento2); }
+    50%  { left: 50%; top: 110px; }
+    54%  { left: 50%; top: 162px; }
+    58%  { left: 84%; top: 162px; background: var(--acento2); box-shadow: 0 0 12px 2px var(--acento2); }
+    70%  { left: 84%; top: 214px; }
+    74%  { left: 50%; top: 214px; background: var(--ok); box-shadow: 0 0 12px 2px var(--ok); }
+    80%  { left: 50%; top: 266px; }
+    86%  { left: 16%; top: 266px; }
+    100% { left: 16%; top: 266px; background: var(--ok); box-shadow: 0 0 12px 2px var(--ok); }
+  }
+  .m0 { top: 6px;   }
+  .m1 { top: 58px;  }
+  .m2 { top: 110px; }
+  .m3 { top: 162px; }
+  .m4 { top: 214px; }
+  .m5 { top: 266px; }
+  .seq .cap {
+    margin-top: .6rem; font-size: .82rem; color: var(--tinta-soft); text-align: center;
+    font-family: var(--mono);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .packet { animation: none; left: 16%; top: 6px; }
+  }
+  @media (max-width: 640px) {
+    .layer { grid-template-columns: 1fr; }
+    .seq .rail { height: 300px; }
+  }
+
+  /* mini-leyenda de color de los tres procesos */
+  .leyenda { display: flex; flex-wrap: wrap; gap: 1.2rem; margin: 1rem 0 0; font-size: .85rem; }
+  .leyenda span { display: inline-flex; align-items: center; gap: .4rem; color: var(--tinta-soft); }
+  .dot { width: .8rem; height: .8rem; border-radius: 50%; display: inline-block; }
+  .dot.b { background: var(--acento); }
+  .dot.r { background: var(--acento2); }
+  .dot.g { background: var(--ok); }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · arquitectura · <a href="index.html">índice</a></p>
+    <h1>La API como orquestador</h1>
+    <p class="sub">Tres procesos que no se conocen entre sí —<strong>Godot</strong>,
+      <strong>FastAPI</strong> y el <strong>motor C++</strong>— y una capa en medio
+      que los coordina. Aquí está quién hace qué, por qué están separados y cómo
+      viaja de verdad una petición de punta a punta.</p>
+  </header>
+
+  <p>El sistema no es un programa: son <strong>tres piezas independientes</strong>
+    hablando por dos fronteras distintas. Godot pinta y recoge clics; el motor C++
+    calcula física; y entre ambos, la API de FastAPI hace de <em>director de
+    orquesta</em>: recibe HTTP, traduce, arranca y serializa el motor, compone
+    operaciones de alto nivel y devuelve JSON. Ninguna de las tres piezas sabe
+    hacer el trabajo de las otras — y eso es a propósito.</p>
+
+  <!-- ═══════════════════════════ EL MAPA ══════════════════════════════════ -->
+  <h2>El mapa: tres capas, dos fronteras</h2>
+
+  <div class="stack">
+    <div class="layer">
+      <div class="who">Godot 4.x<span class="tag">cliente</span></div>
+      <div class="what"><b>Visualiza y captura intención.</b> Dibuja el terreno, el
+        fuego y los cortafuegos; recoge los clics del gestor forestal. No simula
+        nada: cuando el usuario traza un camino, manda celdas y espera diffs.</div>
+    </div>
+    <div class="between">↕ frontera <b>HTTP / JSON</b> · coordenadas en <b>metros reales</b> (0–1598, 0–1393)</div>
+    <div class="layer api">
+      <div class="who">FastAPI<span class="tag">orquestador</span></div>
+      <div class="what"><b>Coordina, no calcula.</b> Traduce HTTP↔protocolo de
+        líneas, gestiona el ciclo de vida del proceso C++, serializa el acceso
+        concurrente y <b>compone</b> primitivas del motor en operaciones de alto
+        nivel (evaluar, puntuar). No tiene ni una línea de física.</div>
+    </div>
+    <div class="between">↕ frontera <b>líneas de texto</b> por <b>stdin / stdout</b> · coordenadas en metros</div>
+    <div class="layer motor">
+      <div class="who">Motor C++<span class="tag">simulación</span></div>
+      <div class="what"><b>Solo física.</b> Propagación de fuego sobre la capa de
+        superficie, terraformado de cortafuegos, cuadrantes con activación
+        dinámica. No sabe nada de red, ni de HTTP, ni de Godot: lee comandos por
+        stdin y escribe resultados por stdout.</div>
+    </div>
+    <div class="between">↑ carga única al arrancar</div>
+    <div class="layer datos">
+      <div class="who">data/world.dat<span class="tag">fuente de verdad</span></div>
+      <div class="what"><b>El mundo, fijo.</b> DEM (elevación) + vegetación
+        (<code>fuel_coefficient</code> por especie), precompilado por
+        <code>build_world.py</code>. El motor lo carga una vez y no lo vuelve a
+        tocar.</div>
+    </div>
+  </div>
+
+  <div class="nota">
+    <strong>La regla de oro de la separación:</strong> el motor C++ no sabe nada de
+    red · la API no sabe nada de física · Godot no sabe nada de simulación. Si una
+    capa empieza a hacer el trabajo de otra, la frontera se rompe — y con ella la
+    posibilidad de probar cada pieza por separado (es justo lo que permite el
+    <a href="como-funciona.html">testing-lab</a>).
+  </div>
+
+  <!-- ═══════════════════════════ POR QUÉ ORQUESTADOR ══════════════════════ -->
+  <h2>Por qué la API es un <em>orquestador</em> y no un proxy</h2>
+  <p>Un proxy se limitaría a reenviar. La API hace tres trabajos que ninguna otra
+    capa puede hacer:</p>
+
+  <table>
+    <thead><tr><th>Trabajo</th><th>Qué resuelve</th><th>Dónde vive</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><b>Traducir</b></td>
+        <td>HTTP/JSON del exterior ⇄ protocolo de líneas <code>stdin/stdout</code> del motor. Godot habla JSON; el motor habla <code>TICK\n</code>.</td>
+        <td><code>motor.py</code></td>
+      </tr>
+      <tr>
+        <td><b>Gestionar el proceso</b></td>
+        <td>Arrancar el binario C++ una vez (lazy), mantenerlo vivo entre comandos, serializar accesos concurrentes y cerrarlo limpio al apagar.</td>
+        <td><code>motor.py</code> · <code>lifespan</code></td>
+      </tr>
+      <tr>
+        <td><b>Componer</b></td>
+        <td>Encadenar primitivas (reset → cortafuegos → ignición → N ticks) en operaciones de alto nivel como <code>/evaluar</code> y <code>/puntuar</code>.</td>
+        <td><code>main.py</code> · <code>evaluacion.py</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════ CICLO DE VIDA ════════════════════════════ -->
+  <h2>El motor es un proceso persistente, no una llamada</h2>
+  <p>Un error tentador sería lanzar el motor C++ en cada petición. No: el binario
+    se arranca <strong>una sola vez</strong> con <code>subprocess.Popen</code> y se
+    mantiene vivo, porque cargar <code>world.dat</code> (el DEM completo) es caro y
+    el estado del incendio debe persistir entre ticks.</p>
+
+  <div class="flow">
+    <div class="box"><div class="big">1ª petición</div><div class="small">llega un <code>/ignite</code> o <code>/tick</code></div></div>
+    <div class="arrow">→</div>
+    <div class="box"><div class="big">arranque <i>lazy</i></div><div class="small"><code>Popen([motor, world.dat])</code> · carga el mundo</div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big">proceso vivo</div><div class="small">N comandos reusan el <b>mismo</b> proceso · el estado persiste</div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big">apagado</div><div class="small"><code>lifespan</code> manda <code>QUIT</code> y espera el cierre</div></div>
+  </div>
+
+  <p>El arranque es <em>perezoso</em>: la API levanta sin tocar el motor
+    («el motor C++ se lanzará al primer comando», dice el log de arranque). Las
+    consultas de solo lectura que llegan antes —<code>/status</code>,
+    <code>/stats</code>, <code>/quadrants</code>— responden con valores por defecto
+    en vez de forzar el arranque, para no contaminar el ciclo de vida.</p>
+
+  <!-- ═══════════════════════════ EL LOCK ══════════════════════════════════ -->
+  <h2>Un solo proceso, muchos hilos: el <em>lock</em></h2>
+  <p>FastAPI sirve peticiones en varios hilos, pero el motor es <strong>un único
+    proceso con un único stdin y un único stdout</strong>. Si dos endpoints
+    escriben y leen a la vez, los comandos y sus respuestas se entrelazan y el
+    parser explota leyendo basura:</p>
+
+  <div class="eq" style="font-size:1rem; font-family:var(--mono); text-align:left;">
+    ValueError: could not convert string to float: '6.211.3827'
+    <small>dos floats de líneas <code>CHANGED</code> distintas, concatenados por dos hilos pisándose</small>
+  </div>
+
+  <p>La defensa es un <code>threading.Lock</code> global en <code>motor.py</code>:
+    cada función pública (<code>tick</code>, <code>ignite</code>,
+    <code>pintar_firebreak</code>…) adquiere el lock al entrar, de modo que un
+    comando completo —escribir <em>y</em> leer su respuesta entera— es
+    <strong>atómico</strong> frente a los demás. Serializa el motor sin que Godot
+    ni la API tengan que coordinarse.</p>
+
+  <!-- ═══════════════════════════ EL RECORRIDO (GIF) ═══════════════════════ -->
+  <h2>Anatomía de una petición: <code>POST /tick</code></h2>
+  <p>Esto es lo que pasa de verdad, fila a fila, cuando Godot pide avanzar un tick.
+    Sigue la bolita: es el control de ejecución viajando entre los tres procesos y
+    volviendo con la respuesta.</p>
+
+  <div class="seq">
+    <div class="lanes">
+      <div class="lane"><h4>Godot</h4><span class="sub">cliente</span></div>
+      <div class="lane"><h4>FastAPI</h4><span class="sub">orquestador</span></div>
+      <div class="lane"><h4>Motor C++</h4><span class="sub">simulación</span></div>
+    </div>
+    <div class="rail">
+      <div class="msg right m0"><span class="lbl">POST /tick &nbsp;(HTTP/JSON)</span></div>
+      <div class="msg right m1"><span class="lbl">with _lock: &nbsp;escribe "TICK\n" → stdin</span></div>
+      <div class="msg left  m2"><span class="lbl">stdout → CHANGED x y z STATE TEMP …</span></div>
+      <div class="msg left  m3"><span class="lbl">… (N líneas CHANGED) …</span></div>
+      <div class="msg left  m4 ret"><span class="lbl">TICK_DONE N &nbsp;→ suelta el lock</span></div>
+      <div class="msg left  m5 ret"><span class="lbl">{ "changed": [diffs renderables] }</span></div>
+      <div class="packet"></div>
+    </div>
+    <div class="cap">la bolita = el control de ejecución · ida en azul, motor en rojo, vuelta en verde · bucle</div>
+  </div>
+
+  <div class="leyenda">
+    <span><i class="dot b"></i> petición / comando saliente</span>
+    <span><i class="dot r"></i> trabajo dentro del motor C++</span>
+    <span><i class="dot g"></i> respuesta de vuelta al cliente</span>
+  </div>
+
+  <p style="margin-top:1.4rem;">En código, ese recorrido es exactamente este bucle
+    de lectura: la API escribe el comando y <strong>se queda leyendo líneas</strong>
+    hasta ver el centinela <code>TICK_DONE</code>, acumulando los <code>CHANGED</code>
+    por el camino:</p>
+
+  <pre><code># motor.py — tick()  (dentro de  with _lock:)
+p.stdin.write("TICK\n"); p.stdin.flush()
+cambios = []
+while True:
+    linea = p.stdout.readline()
+    if linea.startswith("TICK_DONE"):     # centinela de fin
+        return cambios
+    if linea.startswith("CHANGED"):       # una celda que cambió
+        _, wx, wy, wz, st, t = linea.split()
+        cambios.append({"x": int(wx), "y": int(wy), "z": int(wz),
+                        "state": st, "temperature": float(t)})</code></pre>
+
+  <p>Antes de devolver el JSON, la API pasa esos cambios por <code>state.py</code>,
+    que <strong>filtra</strong>: de todos los <code>CHANGED</code> del motor solo
+    reenvía los que alteran algo <em>renderable</em> (apariciones, desapariciones y
+    transiciones <code>BURNING↔SMOKE</code>); un cambio de temperatura que no cambia
+    el estado visible se descarta. Así Godot recibe diffs mínimos, no el volcado
+    entero del motor.</p>
+
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra el recorrido</span>
+    La API nunca <em>calcula</em> el tick: lo <strong>pide</strong>, traduce el
+    protocolo de líneas a JSON, recorta lo que el cliente no necesita y mantiene el
+    proceso C++ ordenado bajo el lock. El motor, por su lado, ni se entera de que
+    existe una red. Cada capa hace una sola cosa.
+  </div>
+
+  <!-- ═══════════════════════════ PROTOCOLO ════════════════════════════════ -->
+  <h2>La frontera de abajo: el protocolo de líneas</h2>
+  <p>Entre la API y el motor no hay JSON ni HTTP: hay <strong>líneas de texto</strong>
+    por <code>stdin/stdout</code>. Un comando por línea; las respuestas terminan en
+    un centinela (<code>TICK_DONE</code>, <code>FIREBREAK_DONE</code>, <code>MODE</code>…)
+    que la API espera antes de soltar el lock.</p>
+
+  <table>
+    <thead><tr><th>API → motor (stdin)</th><th>motor → API (stdout)</th><th>Para qué</th></tr></thead>
+    <tbody>
+      <tr><td><code>IGNITE wx wz</code></td><td><i>(silencioso)</i></td><td>enciende un foco en metros reales</td></tr>
+      <tr><td><code>TICK</code></td><td><code>CHANGED…</code> + <code>TICK_DONE N</code></td><td>avanza un tick, devuelve las celdas que cambiaron</td></tr>
+      <tr><td><code>RESET</code></td><td><i>(silencioso)</i></td><td>limpia el estado dinámico del incendio</td></tr>
+      <tr><td><code>FIREBREAK_BATCH I N</code> + N líneas <code>x z</code></td><td><code>FIREBREAK_DONE N</code></td><td>pinta el cortafuegos (terraforma + quita combustible)</td></tr>
+      <tr><td><code>WIND vx vz</code></td><td><i>(silencioso)</i></td><td>fija el viento global (coordenadas del mundo)</td></tr>
+      <tr><td><code>PHYSICS_MODE surface|volumetric</code></td><td><code>MODE …</code></td><td>conmuta superficie ⇄ volumétrico</td></tr>
+      <tr><td><code>QUADRANTS</code></td><td><code>QUADRANTS qx=… activos=…</code></td><td>snapshot de la rejilla de cuadrantes activos</td></tr>
+      <tr><td><code>STATS</code></td><td><code>STATS ticks=… presion=… …</code></td><td>perfil de coste por fase del tick (ns)</td></tr>
+      <tr><td><code>QUIT</code></td><td><i>(cierre)</i></td><td>salida limpia del proceso</td></tr>
+    </tbody>
+  </table>
+
+  <div class="nota">
+    Los comandos que el motor no responde (<code>IGNITE</code>, <code>WIND</code>,
+    <code>RESET</code>, <code>SMOKE_VIRTUAL</code>) son <em>fire-and-forget</em>: la
+    API escribe y sigue, sin bloquearse a leer. Solo los que devuelven datos
+    (<code>TICK</code>, <code>FIREBREAK_BATCH</code>, <code>QUADRANTS</code>…)
+    obligan a esperar el centinela.
+  </div>
+
+  <!-- ═══════════════════════════ COMPOSICIÓN ══════════════════════════════ -->
+  <h2>Orquestación de alto nivel: el núcleo científico</h2>
+  <p>Aquí la API deja de ser un traductor y se vuelve un <strong>compositor</strong>.
+    Evaluar la calidad de un cortafuegos no es una primitiva del motor: es una
+    <em>secuencia</em> de primitivas que la API encadena en un escenario limpio y
+    reproducible —<code>_simular_escenario</code>:</p>
+
+  <div class="flow">
+    <div class="box"><div class="big">RESET</div><div class="small">estado del incendio a cero</div></div>
+    <div class="arrow">→</div>
+    <div class="box"><div class="big">FIREBREAK</div><div class="small">pinta el camino a evaluar</div></div>
+    <div class="arrow">→</div>
+    <div class="box"><div class="big">IGNITE ×focos</div><div class="small">enciende los focos</div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big">N × TICK</div><div class="small">corre el incendio, recolecta factores</div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big">factores</div><div class="small">área quemada, contención, protegidas…</div></div>
+  </div>
+
+  <p>Sobre esa secuencia se construyen las operaciones del TFG:</p>
+  <ul>
+    <li><b><code>POST /evaluar</code></b> — corre <em>un</em> escenario y devuelve los
+      factores crudos del incendio (área quemada, si el fuego cruzó el cortafuegos,
+      cuándo alcanzó zonas protegidas).</li>
+    <li><b><code>POST /puntuar</code></b> — corre <em>dos</em> escenarios: uno con el
+      camino y una <strong>baseline sin cortafuegos</strong> («no hacer nada»), para
+      medir el área <em>salvada</em>, y combina todo en una <strong>métrica
+      compuesta ponderada</strong>. Variar los pesos = análisis de sensibilidad.</li>
+    <li><b><code>POST /trazar</code></b> — el A* calcula el camino de menor coste y
+      devuelve <strong>el mismo vector de celdas</strong> que produciría el dibujado
+      manual; el cliente lo manda a <code>/firebreak</code>. El algoritmo reusa la
+      tubería del usuario, no una paralela.</li>
+  </ul>
+
+  <div class="demuestra">
+    <span class="lbl">Por qué importa</span>
+    Comparar dos caminos forestales es comparar dos llamadas a <code>/puntuar</code>
+    con el mismo foco y los mismos pesos. Esa reproducibilidad —reset limpio, misma
+    semilla de escenario, factores normalizados contra la baseline— es lo que hace
+    que la evaluación sea ciencia y no anécdota. Y vive entera en la capa de
+    orquestación: el motor solo sabe arder.
+  </div>
+
+  <!-- ═══════════════════════════ MAPA DE ENDPOINTS ════════════════════════ -->
+  <h2>Mapa de endpoints, por responsabilidad</h2>
+  <table>
+    <thead><tr><th>Grupo</th><th>Endpoints</th><th>Qué orquestan</th></tr></thead>
+    <tbody>
+      <tr><td><b>Ciclo de vida</b></td><td><code>/reset</code> · <code>/status</code></td><td>limpiar estado, conmutar modo de física</td></tr>
+      <tr><td><b>Incendio en vivo</b></td><td><code>/ignite</code> · <code>/tick</code> · <code>/viento</code></td><td>encender focos y avanzar el fuego paso a paso</td></tr>
+      <tr><td><b>Cortafuegos</b></td><td><code>/firebreak</code> (POST/DELETE) · <code>/trazar</code></td><td>pintar / deshacer / trazar (A*) el camino</td></tr>
+      <tr><td><b>Evaluación</b></td><td><code>/evaluar</code> · <code>/puntuar</code> · <code>/resultado</code></td><td>componer escenarios y puntuar la calidad del camino</td></tr>
+      <tr><td><b>Introspección</b></td><td><code>/snapshot</code> · <code>/fuel_map</code> · <code>/quadrants</code> · <code>/stats</code></td><td>estado para renderizar y para depurar</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Una frontera, una unidad: metros reales</h2>
+  <p>Toda la conversación Godot↔API↔motor ocurre en <strong>metros reales del
+    terreno</strong> (X ∈ 0–1598, Z ∈ 0–1393), nunca en índices de grid. Las
+    conversiones internas —por ejemplo el swap de la convención de ejes del viento
+    (<code>Vec3.y ↔ Z mundo</code>)— suceden <strong>dentro del motor C++</strong>,
+    no en la frontera. La API y Godot hablan siempre el idioma del mundo físico; el
+    motor traduce a su sistema interno puertas adentro.</p>
+
+  <footer class="pie">
+    En una frase: <strong>Godot quiere, el motor calcula, y la API decide cuándo,
+    en qué orden y traduciendo qué.</strong> El valor del orquestador no está en
+    hacer física ni en pintar, sino en mantener las otras dos capas ignorantes la
+    una de la otra — y en componer sus primitivas en la evaluación de caminos, que
+    es el núcleo del TFG. Vuelve al <a href="index.html">índice</a> o mira
+    <a href="como-funciona.html">cómo se prueba cada función del motor por separado</a>.
+  </footer>
+
+</div>
+</body>
+</html>

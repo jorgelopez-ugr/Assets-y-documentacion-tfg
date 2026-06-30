@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sistema de Logging · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Logging</p>
+    <h1>Sistema de Logging</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-api.html">Arquitectura API</a> · <a href="mvp-3-5-design-changes.html">MVP 3.5 — Design Changes</a></p>
+<div class="callout callout-danger"><div class="callout-title"><span class="callout-icon">⛔</span> OBSOLETO (2026-06-15)</div><div class="callout-body"><p>El subsistema de logging quedó en desuso. La carpeta <code>logs/</code> (incluidos
+<code>rotate_logs.py</code> y su test) <strong>se sacó del control de versiones</strong> el
+2026-06-15: ya no se versiona nada de <code>logs/</code>. Esta nota se conserva solo
+como referencia histórica; no describe el estado actual del proyecto.</p></div></div>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Doc parcialmente histórico (rediseño &quot;Arquitectura de Cuadrantes&quot;)</div><div class="callout-body"><p>El motor C++ del rediseño <strong>no expone <code>--debug</code> ni escribe <code>engine.log</code></strong>.
+La sección sobre el debug del motor C++ y la captura desde <code>api/motor.py</code>
+ya no aplica. Lo que sigue vigente:</p>
+<ul>
+<li><code>api/logger.py</code> (módulo centralizado) — sin cambios.</li>
+<li><code>logs/api.log</code> con la actividad HTTP de la API — sigue funcionando.</li>
+<li><code>logs/rotate_logs.py</code> — sigue siendo válido (rota cualquier <code>.log</code>).</li>
+</ul>
+<p>El motor nuevo emite <code>CHANGED</code> y <code>TICK_DONE</code> por stdout y se comunica con
+la API por texto: si necesitas trazar lo que ve la API en un tick,
+añadirías <code>log.debug(...)</code> en <code>api/motor.py</code> directamente.</p></div></div>
+<h2 id="por-que-existe">Por qué existe</h2>
+<p>Cuando algo falla (tick que no responde, proceso C++ muerto, estado
+corrupto) no había rastro de qué ocurrió ni cuándo. El módulo
+<code>api/logger.py</code> añade observabilidad de la capa Python sin tocar la
+lógica de simulación.</p>
+<hr>
+<h2 id="estructura-de-ficheros">Estructura de ficheros</h2>
+<pre><code>logs/
+├── api.log          ← actividad de la API (requests, ticks, errores)
+├── rotate_logs.py   ← script de rotación manual
+└── .gitkeep         ← garantiza que la carpeta se versiona vacía
+</code></pre>
+<p>Los <code>.log</code> están en <code>.gitignore</code> — solo se versiona la carpeta.</p>
+<hr>
+<h2 id="apiloggerpy-el-modulo-centralizado"><code>api/logger.py</code> — el módulo centralizado</h2>
+<h3 id="como-usarlo-en-cualquier-modulo-de-la-api">Cómo usarlo en cualquier módulo de la API</h3>
+<pre><code class="language-python">from logger import get_logger
+
+log = get_logger(__name__)
+log.info(&quot;mensaje informativo&quot;)
+log.debug(&quot;detalle solo visible en DEBUG_MODE=1&quot;)
+log.error(&quot;algo salió mal&quot;)
+</code></pre>
+<p><code>get_logger</code> configura los handlers <strong>una sola vez</strong> (flag <code>_configurado</code>) aunque se llame desde varios módulos. El root logger de Python se configura globalmente.</p>
+<h3 id="handlers">Handlers</h3>
+<table>
+<thead>
+<tr>
+<th>Handler</th>
+<th>Cuándo activo</th>
+<th>Fichero</th>
+<th>Nivel</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RotatingFileHandler</code></td>
+<td>Siempre</td>
+<td><code>logs/api.log</code></td>
+<td>INFO / DEBUG según <code>DEBUG_MODE</code></td>
+</tr>
+<tr>
+<td><code>StreamHandler</code> (consola)</td>
+<td>Solo si <code>DEBUG_MODE=1</code></td>
+<td>stdout</td>
+<td>DEBUG</td>
+</tr>
+</tbody>
+</table>
+<p>La rotación del handler de fichero es automática a <strong>5 MB</strong>, guardando 3 backups:</p>
+<pre><code class="language-python">RotatingFileHandler(API_LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
+</code></pre>
+<p>Esto es diferente a la rotación manual de <code>rotate_logs.py</code>. El handler rota dentro de la sesión activa; el script rota y comprime entre sesiones.</p>
+<hr>
+<h2 id="variable-de-entorno-debug_mode">Variable de entorno <code>DEBUG_MODE</code></h2>
+<pre><code class="language-bash"># API silenciosa — solo logs a fichero, nivel INFO
+uvicorn main:app --app-dir api
+
+# API verbosa — fichero + consola, nivel DEBUG, motor en modo debug
+DEBUG_MODE=1 uvicorn main:app --app-dir api
+</code></pre>
+<p><code>DEBUG_MODE</code> afecta a dos cosas a la vez:
+1. <strong>Logger de la API</strong> — activa nivel DEBUG y el handler de consola
+2. <strong>Motor C++</strong> — lanza el proceso con <code>--debug</code> y captura su stderr en <code>logs/engine.log</code></p>
+<hr>
+<h2 id="que-se-loguea-en-cada-endpoint">Qué se loguea en cada endpoint</h2>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Nivel</th>
+<th>Qué se loguea</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>arranque API</td>
+<td>INFO</td>
+<td>ruta de <code>initial_state.json</code>, número de celdas</td>
+</tr>
+<tr>
+<td><code>POST /reset</code></td>
+<td>INFO</td>
+<td>confirmación + celdas cargadas</td>
+</tr>
+<tr>
+<td><code>POST /ignite</code></td>
+<td>INFO</td>
+<td>coordenadas (x, z), y si la celda es nueva o existente</td>
+</tr>
+<tr>
+<td><code>POST /tick</code></td>
+<td>DEBUG</td>
+<td>celdas BURNING/SMOKE tras el tick</td>
+</tr>
+<tr>
+<td><code>GET /snapshot</code></td>
+<td>DEBUG</td>
+<td>foto completa para sync inicial</td>
+</tr>
+<tr>
+<td><code>POST /firebreak</code></td>
+<td>INFO</td>
+<td>celdas de cortafuegos pintadas</td>
+</tr>
+<tr>
+<td>errores</td>
+<td>ERROR</td>
+<td>mensaje de excepción original</td>
+</tr>
+</tbody>
+</table>
+<p>El endpoint de alta frecuencia (<code>/tick</code>) usa nivel DEBUG para no saturar el log en producción.</p>
+<hr>
+<h2 id="logsenginelog-debug-del-motor-c"><code>logs/engine.log</code> — debug del motor C++</h2>
+<h3 id="que-escribe-el-motor">Qué escribe el motor</h3>
+<p>Con <code>--debug</code>, el motor C++ escribe una línea a <code>stderr</code> tras procesar cada tick:</p>
+<pre><code>DEBUG tick=1 burning=1 smoke=0 temp_max=799.97
+DEBUG tick=2 burning=3 smoke=1 temp_max=743.21
+DEBUG tick=3 burning=7 smoke=2 temp_max=698.05
+</code></pre>
+<p>Campos:
+- <code>tick</code> — número de tick acumulado desde que arrancó el proceso
+- <code>burning</code> — celdas en estado BURNING en ese instante
+- <code>smoke</code> — celdas en estado SMOKE
+- <code>temp_max</code> — temperatura máxima del grid completo (°C)</p>
+<h3 id="por-que-stderr-y-no-stdout">Por qué stderr y no stdout</h3>
+<p>El protocolo entre la API y el motor usa <code>stdout</code> para el JSON de respuesta. Mezclar debug en stdout rompería la deserialización. <code>stderr</code> está libre para mensajes humanos sin interferir con el protocolo.</p>
+<h3 id="como-la-api-captura-el-stderr">Cómo la API captura el stderr</h3>
+<p>En <code>api/motor.py</code>, cuando <code>DEBUG_MODE=1</code>:</p>
+<pre><code class="language-python"># Lanzamiento con stderr=PIPE
+_proceso = subprocess.Popen(
+    cmd + [&quot;--debug&quot;],
+    stdin=subprocess.PIPE,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+)
+
+# Tras cada tick, leer la línea de debug
+linea_debug = proceso.stderr.readline().strip()
+if linea_debug:
+    _get_engine_logger().debug(linea_debug)
+</code></pre>
+<p>La lectura de stderr es <strong>síncrona</strong> y funciona porque el motor escribe exactamente una línea por tick. No hay riesgo de deadlock porque stdout ya fue leído antes.</p>
+<p>El engine logger (<code>logs/engine.log</code>) tiene su propio <code>RotatingFileHandler</code> con <code>propagate = False</code> — no contamina el log de la API.</p>
+<hr>
+<h2 id="ejemplo-de-sesion-con-debug_mode1">Ejemplo de sesión con <code>DEBUG_MODE=1</code></h2>
+<pre><code class="language-bash">DEBUG_MODE=1 uvicorn main:app --app-dir api
+</code></pre>
+<pre><code>2026-04-17 08:00:01 [INFO] main — Cargando estado inicial desde .../data/initial_state.json
+2026-04-17 08:00:01 [INFO] main — Estado inicial cargado: 10000 celdas
+2026-04-17 08:00:05 [INFO] main — POST /ignite — punto (50, 50)
+2026-04-17 08:00:05 [INFO] main — Ignición en celda existente (50, 4, 50)
+2026-04-17 08:00:06 [DEBUG] main — Tick completado — 1 celdas activas (BURNING/SMOKE)
+2026-04-17 08:00:06 [DEBUG] main — Tick completado — 4 celdas activas (BURNING/SMOKE)
+</code></pre>
+<p>Y en <code>logs/engine.log</code>:</p>
+<pre><code>2026-04-17 08:00:06 [ENGINE] DEBUG tick=1 burning=1 smoke=0 temp_max=799.97
+2026-04-17 08:00:06 [ENGINE] DEBUG tick=2 burning=4 smoke=0 temp_max=752.13
+</code></pre>
+<hr>
+<h2 id="tests">Tests</h2>
+<pre><code class="language-bash">cd api &amp;&amp; .venv/bin/pytest test_logger.py -v        # 4 tests
+cd api &amp;&amp; .venv/bin/pytest test_motor_debug.py -v   # 3 tests
+</code></pre>
+<p>Ver también: <a href="rotate-logs.html">rotate_logs</a></p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

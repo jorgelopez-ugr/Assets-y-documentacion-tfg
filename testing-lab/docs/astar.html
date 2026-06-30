@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A* — trazado del cortafuegos — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · trazado del cortafuegos · <a href="index.html">índice</a></p>
+    <h1>A* — trazar el cortafuegos óptimo</h1>
+    <p class="sub">El corazón del producto: dado un origen y un destino sobre el
+      terreno, encontrar el <strong>camino de menor coste</strong> para un
+      cortafuegos — evitando pendientes fuertes, biomasa densa y especies
+      protegidas. Aquí se ve el A* real del proyecto trabajando sobre terreno
+      sintético.</p>
+  </header>
+
+  <div class="nota">
+    A diferencia de las otras páginas, esta operación no vive en el motor C++ sino
+    en Python (<code>api/pathfinding.py</code>): el pathfinding no es física. El
+    experimento <strong>importa la función real</strong> y la corre sobre un
+    terreno sintético controlado. La animación usa un A* "espejo" que reproduce el
+    mismo coste y heurística — verificado que da <em>exactamente</em> el mismo
+    camino que el real.
+  </div>
+
+  <!-- ═══════════════════════════ 1 · COSTE ════════════════════════════════ -->
+  <h2>1 · La función de coste — qué es un camino "bueno"</h2>
+  <p>A* no busca el camino más corto, sino el más <strong>barato</strong> según una
+    función de coste que codifica lo que queremos de un cortafuegos. Entrar en una
+    celda cuesta:</p>
+
+  <div class="eq" style="font-size:1.12rem">
+    coste = w<sub>long</sub>·paso + w<sub>pend</sub>·pendiente +
+            w<sub>bio</sub>·fuel + w<sub>esp</sub>·[especie protegida]
+    <small>paso = 1 (recto) o √2 (diagonal) · pesos por defecto: 1 · 5 · 2 · 5</small>
+  </div>
+
+  <ul>
+    <li><strong>longitud</strong> — caminos cortos (un cortafuegos largo cuesta más
+      de abrir y mantener).</li>
+    <li><strong>pendiente</strong> — evitar laderas empinadas (difíciles de
+      despejar; el fuego corre más rápido cuesta arriba).</li>
+    <li><strong>biomasa / fuel</strong> — preferir donde hay menos que talar.</li>
+    <li><strong>especie protegida</strong> — penalizar cruzar pino carrasco,
+      encina o quejigo (biodiversidad a preservar).</li>
+  </ul>
+  <p>Los cuatro pesos son <strong>parametrizables</strong> (<code>CosteParams</code>) —
+    es lo que permite el análisis de sensibilidad del TFG (ver §3).</p>
+
+  <figure>
+    <img src="../out/astar_escenario.png" alt="Las tres capas de coste y el camino A* sobre el coste combinado">
+    <figcaption>
+      Terreno sintético: <b>pendiente</b> (un muro con un paso), <b>biomasa</b> (un
+      bosque denso) y <b>especie protegida</b> (una mancha). Abajo a la derecha, el
+      <b>coste combinado</b> y el camino que traza el A* (cian): pasa por el hueco
+      del muro y rodea la mancha protegida.
+    </figcaption>
+  </figure>
+
+  <!-- ═══════════════════════════ 2 · HEURÍSTICA ═══════════════════════════ -->
+  <h2>2 · A* y la heurística — buscar con un imán hacia la meta</h2>
+  <p>A* mantiene una frontera de nodos por explorar y siempre expande el más
+    prometedor: el que minimiza <strong>f = g + h</strong>, donde <code>g</code> es
+    el coste real acumulado desde el origen y <code>h</code> es una <em>estimación
+    optimista</em> de lo que falta hasta la meta. Esa estimación es la heurística:</p>
+
+  <div class="eq">
+    h(celda) = distancia_euclídea(celda, meta) × w<sub>long</sub>
+    <small>cota inferior admisible: el coste de avanzar nunca es menor que w<sub>long</sub>·distancia</small>
+  </div>
+
+  <p>Que sea una <strong>cota inferior</strong> (nunca sobreestima) es lo que
+    garantiza que A* encuentre el camino óptimo. Y que apunte hacia la meta es lo
+    que lo hace rápido: compáralo con Dijkstra (que es A* con <code>h = 0</code>,
+    sin imán):</p>
+
+  <figure>
+    <img src="../out/astar_heuristica.png" alt="A* explora una región dirigida; Dijkstra inunda todo el mapa">
+    <figcaption>
+      Mismo problema, mismo camino óptimo (naranja). <b>Izquierda (A*):</b> la
+      heurística dirige la búsqueda → explora un "cigarro" hacia la meta.
+      <b>Derecha (Dijkstra):</b> sin heurística, inunda el mapa entero. A* exploró
+      <b>2.7× menos celdas</b>.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/astar.gif" alt="Animación de A* expandiéndose celda a celda hasta encontrar el camino">
+    <figcaption>A* en acción: la frontera crece dirigida hacia la meta; al
+      alcanzarla, se reconstruye el camino (naranja).</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La heurística no cambia el resultado (el camino es el mismo y sigue siendo
+    óptimo), pero <strong>cambia radicalmente el esfuerzo</strong>: al estimar
+    "cuánto falta", A* deja de malgastar tiempo explorando en la dirección
+    contraria a la meta. Es la diferencia entre buscar con brújula o a ciegas.
+  </div>
+
+  <div class="nota">
+    <strong>Matiz honesto.</strong> La heurística solo acota el término de
+    <em>longitud</em>, no el coste del terreno (pendiente/biomasa/especies). En un
+    mapa donde el terreno domina el coste, es una cota floja y A* se acerca al
+    comportamiento de Dijkstra (explora casi todo). El contraste grande de arriba
+    se da cuando el terreno de fondo es barato y la longitud manda. Una heurística
+    que también acotara el terreno podaría más — posible mejora futura.
+  </div>
+
+  <!-- ═══════════════════════════ 3 · SENSIBILIDAD ═════════════════════════ -->
+  <h2>3 · Pesos ajustables — análisis de sensibilidad</h2>
+  <p>Cambiar los pesos cambia qué evita el camino. Subiendo el peso de las especies
+    protegidas, el trazado pasa de atravesar la mancha a rodearla:</p>
+
+  <figure>
+    <img src="../out/astar_sensibilidad.png" alt="El camino con peso de especies 0, 5 y 20: de atravesar a rodear">
+    <figcaption>
+      Con <b>w_especies = 0</b> el A* ignora la mancha y la atraviesa (camino más
+      corto); al subir el peso, la <b>rodea</b> cada vez más. Mismos datos, distinta
+      política de coste.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La calidad de un camino no es absoluta: depende de qué prioricemos. Tener los
+    pesos como parámetros permite estudiar el compromiso (camino corto ↔ proteger
+    biodiversidad ↔ esquivar pendientes) — un resultado esperado del TFG, no una
+    constante mágica enterrada en el código.
+  </div>
+
+  <!-- ═══════════════════════════ 4 · ENCAJE ═══════════════════════════════ -->
+  <h2>4 · Cómo encaja en el proyecto</h2>
+  <p>El A* devuelve un <strong>vector de celdas</strong> <code>[[x, z], …]</code>,
+    idéntico al que produce el dibujado manual del cortafuegos. Por eso se envía por
+    el mismo flujo (<code>POST /firebreak</code>) y <strong>reutiliza sin código
+    nuevo</strong> todo lo que ya hace el motor con un cortafuegos pintado a mano:
+    quitar combustible, terraformar la franja, marcarla como <code>CORTAFUEGOS</code>
+    y aplicar el enfriamiento de contención. El trazado automático y el manual
+    acaban en el mismo sitio.</p>
+
+  <!-- ═══════════════════════ PARTE 2 · TÉRMINO A TÉRMINO ══════════════════ -->
+  <h2 id="parte2">Parte 2 — la función de coste, término a término</h2>
+  <p>Las preguntas finas: ¿qué es <em>exactamente</em> cada término? Todo lo que
+    sigue está leído del código real (<code>api/pathfinding.py</code>,
+    <code>api/dem.py</code>, <code>api/main.py</code>). Un detalle transversal: los
+    cuatro términos del terreno se evalúan en la <strong>celda de destino</strong>
+    (la que se va a "entrar"), no en la de origen del paso.</p>
+
+  <div class="eq" style="font-size:1.05rem">
+    coste(entrar en <b>d</b>) = w<sub>long</sub>·paso +
+    w<sub>pend</sub>·pendiente(<b>d</b>) + w<sub>bio</sub>·fuel(<b>d</b>) +
+    w<sub>esp</sub>·[especie protegida en <b>d</b>]
+  </div>
+
+  <h3>paso — ¿siempre 1.0 / √2?</h3>
+  <p><strong>Sí, exactamente</strong>: 1.0 para los 4 vecinos ortogonales y
+    √2 para los 4 diagonales, <strong>sin normalización adicional</strong>. El
+    valor va precalculado en la tabla de vecinos y se multiplica por
+    <code>w_longitud</code>:</p>
+  <pre><code>_DIAG = math.sqrt(2.0)
+_VECINOS = [(1,0, 1.0), (-1,0, 1.0), (0,1, 1.0), (0,-1, 1.0),
+            (1,1,_DIAG), (1,-1,_DIAG), (-1,1,_DIAG), (-1,-1,_DIAG)]
+# coste: params.w_longitud * paso</code></pre>
+  <p>No hay factor por tamaño de celda (1 celda = 1 m). La heurística usa distancia
+    euclídea (<code>math.hypot</code>), coherente con ese paso → admisible.</p>
+
+  <h3>pendiente(celda) — ¿cómo se calcula?</h3>
+  <p>Es el <strong>gradiente local de elevación por celda, precalculado del
+    heightmap</strong>. <em>No</em> es la <code>pendiente_media</code> del Cuadrante
+    (esa es la del motor, gruesa, una por cuadrante de 50×50), ni se calcula en el
+    momento de la transición. En <code>dem.py</code>:</p>
+  <pre><code>self.elev  = ELEV_MIN + (raw16bit/65535)·(ELEV_MAX−ELEV_MIN)   # metros
+gz, gx     = np.gradient(self.elev)        # diferencias centradas, espaciado 1 m
+self.slope = sqrt(gx² + gz²)               # magnitud del gradiente (m/m)</code></pre>
+  <p>El A* lee <code>self.slope[nz, nx]</code> — la pendiente de la <strong>celda
+    destino</strong>. Coincide con la elevación que generó <code>world.dat</code>
+    (misma convención que <code>build_world.py</code>).</p>
+  <div class="nota">
+    <strong>Matiz:</strong> es un <em>escalar por celda</em> (lo empinado del
+    terreno ahí), no la pendiente <em>en la dirección</em> del movimiento. Una celda
+    empinada cuesta lo mismo entres por donde entres — no penaliza específicamente
+    subir/bajar la ladera, solo "estar en zona empinada".
+  </div>
+
+  <h3>combustibilidad(celda) — ¿transformación?</h3>
+  <p><strong>Ninguna.</strong> Es directamente el <code>fuel_coefficient</code> de
+    la celda destino (∈ [0,1]), el <em>mismo</em> que usa la simulación. Se lee de
+    <code>world.dat</code> en <code>cargar_fuel()</code> y entra lineal:
+    <code>w_biomasa · self.fuel[nz, nx]</code>. Sin curvas ni umbrales.</p>
+
+  <h3>penalización_especie(celda) — ¿cómo se mapea?</h3>
+  <p>Es un <strong>indicador binario (0 ó 1) por <em>lookup de color</em></strong>
+    contra el mapa rasterizado de especies — no son umbrales por fuel ni el
+    hiperespectral en crudo. En <code>cargar_especies_penal()</code> se lee
+    <code>data/especies_map.png</code> (RGB, generado por <code>build_world</code> a
+    partir de la segmentación hiperespectral) y se marca la celda como penalizada si
+    su color coincide <strong>exactamente</strong> con una especie protegida:</p>
+  <table>
+    <thead><tr><th>Especie protegida</th><th>Color RGB en el mapa</th></tr></thead>
+    <tbody>
+      <tr><td>Pino carrasco</td><td>cian (0, 255, 255)</td></tr>
+      <tr><td>Encina</td><td>violeta (127, 0, 255)</td></tr>
+      <tr><td>Quejigo</td><td>naranja (255, 128, 0)</td></tr>
+    </tbody>
+  </table>
+  <p>El coste suma <code>w_especies · 1</code> si la celda es de especie protegida y
+    <code>0</code> si no. Es decir:</p>
+  <ul>
+    <li><strong>Binario y mismo peso</strong> para las tres especies (no hay un peso
+      distinto por especie).</li>
+    <li>El conjunto de especies penalizadas es <strong>configurable</strong>
+      (argumento <code>colores=</code>), por defecto esas tres.</li>
+    <li>Si no existe <code>especies_map.png</code> → todo <code>False</code>: el A*
+      sigue trazando con los otros tres factores (sin penalización de especie).</li>
+  </ul>
+
+  <h3>Los pesos w_* — ¿hardcodeados, parámetro, o desde Godot?</h3>
+  <p><strong>Configurables por parámetro</strong>, con defaults — ni constantes
+    enterradas ni (todavía) elegidos desde Godot:</p>
+  <ul>
+    <li>Son un <code>dataclass CosteParams</code> con defaults
+      <code>w_longitud=1, w_pendiente=5, w_biomasa=2, w_especies=5</code>,
+      ajustables en cada llamada a <code>buscar(params=…)</code>.</li>
+    <li>La API los expone como campo <strong>opcional</strong> <code>pesos</code> en
+      <code>POST /trazar</code>: si el cliente los envía se aplican, si no, defaults.
+      La tubería de configuración existe de extremo a extremo.</li>
+    <li>Pero la escena de Godot actual <strong>no los envía</strong>:
+      <code>_pedir_trazado()</code> manda solo <code>origen</code> y
+      <code>destino</code> → en la práctica se usan los defaults.</li>
+  </ul>
+  <div class="demuestra">
+    <span class="lbl">En resumen</span>
+    Los pesos están <strong>pensados como parámetros</strong> (para el análisis de
+    sensibilidad del TFG), accesibles vía API; el usuario aún no los toca desde
+    Godot — exponerlos sería añadir unos sliders en el HUD que rellenen el campo
+    <code>pesos</code> de <code>/trazar</code>.
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>testing-lab/.venv/bin/python testing-lab/experiments/astar.py   # escenario + heurística + sensibilidad + GIF
+testing-lab/.venv/bin/python testing-lab/tests/test_astar.py    # cordura (espejo==real, A*≤Dijkstra, contiguo)</code></pre>
+
+  <footer class="pie">
+    Función real del proyecto: <code>Pathfinder.buscar</code> y <code>CosteParams</code>
+    (<code>api/pathfinding.py</code>), corrida sobre terreno sintético. El A* espejo
+    de la animación reproduce el mismo coste y heurística (verificado idéntico al
+    real). Coordenadas en celdas = metros, como el contrato de cortafuegos.
+  </footer>
+
+</div>
+</body>
+</html>

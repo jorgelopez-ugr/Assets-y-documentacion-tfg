@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>build_world.py · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Tooling de datos</p>
+    <h1>build_world.py</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="world.html">world</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Sección de `fuel` desactualizada (revisado 2026-06-27)</div><div class="callout-body"><p>El <code>fuel_coefficient</code> <strong>ya no es <code>1.0</code> uniforme</strong>: se deriva de la
+clasificación hiperespectral (capas de especies, alineadas por homografía
+SIFT en #139, vía <code>alinear_hiperespectral.clasificar()</code>). Por tanto el
+apartado "Lo que aún no hace → No usa imagen hiperespectral", la fila
+"<code>fuel = 1.0</code> dentro del DEM" y los tests que asumen fuel uniforme están
+obsoletos. Mapeo real en <a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a>. El resto (header,
+cuadrantes, formato binario, recorte de bordes) sigue vigente.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>tools/build_world.py</code>
+<strong>Tests:</strong> <code>tools/test_build_world.py</code> (13 asserts)
+<strong>Genera:</strong> <code>data/world.dat</code> (binario, ~11 MB, versionado)</p>
+<hr>
+<h2 id="para-que-existe-este-script">Para qué existe este script</h2>
+<p>Sustituye al antiguo <code>build_initial_state.py</code>. Lee el DEM real
+(<code>heightmap_16bit.png</code>) y precomputa <strong>todo lo que el motor necesita saber
+del terreno</strong> una sola vez. El resultado se versiona en el repositorio para
+que cualquiera pueda compilar el motor y arrancar la simulación sin tener
+que volver a generarlo.</p>
+<p>El script se ejecuta una vez por terreno. Si el <code>heightmap_16bit.png</code> no
+cambia, no hace falta regenerarlo.</p>
+<hr>
+<h2 id="que-precomputa">Qué precomputa</h2>
+<table>
+<thead>
+<tr>
+<th>Dato</th>
+<th>Origen</th>
+<th>Almacenado en world.dat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Dimensiones del mundo</td>
+<td>constantes (1598×1393 m)</td>
+<td>header</td>
+</tr>
+<tr>
+<td>División en cuadrantes</td>
+<td>constantes (50×50 m → 32×28)</td>
+<td>header</td>
+</tr>
+<tr>
+<td>Niveles verticales</td>
+<td>constantes (20)</td>
+<td>header</td>
+</tr>
+<tr>
+<td>ID de cada cuadrante</td>
+<td>índice secuencial</td>
+<td>por cuadrante</td>
+</tr>
+<tr>
+<td>Origen mundial del cuadrante</td>
+<td><code>(qx*50, qz*50)</code></td>
+<td>por cuadrante</td>
+</tr>
+<tr>
+<td>Vecinos (Moore, 8)</td>
+<td>grafo de adyacencia</td>
+<td>por cuadrante</td>
+</tr>
+<tr>
+<td>Pendiente media</td>
+<td><code>np.gradient</code> sobre el bloque 50×50 del DEM</td>
+<td>por cuadrante</td>
+</tr>
+<tr>
+<td>Dirección de pendiente</td>
+<td><code>np.gradient</code> (vector XZ)</td>
+<td>por cuadrante</td>
+</tr>
+<tr>
+<td>Nivel vertical de superficie</td>
+<td>DEM remapeado a <code>[0, 19]</code></td>
+<td>por celda de superficie</td>
+</tr>
+<tr>
+<td><code>fuel_coefficient</code></td>
+<td><code>1.0</code> dentro del DEM, <code>0.0</code> fuera</td>
+<td>por celda de superficie</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="constantes-y-decisiones">Constantes y decisiones</h2>
+<pre><code class="language-python">WIDTH_METROS  = 1598
+DEPTH_METROS  = 1393
+CELDA_TAM_M   = 50           # tamaño de cuadrante en metros
+NIVELES_Y     = 20
+ELEV_MIN      = 1597.0
+ELEV_MAX      = 1743.0
+MAGIC         = b&quot;WLD1&quot;
+</code></pre>
+<h3 id="recorte-de-bordes">Recorte de bordes</h3>
+<p><code>1598 / 50 = 31.96</code> y <code>1393 / 50 = 27.86</code>: los cuadrantes del borde
+derecho/inferior <strong>no son cuadrados completos</strong>. La decisión adoptada es
+mantener una rejilla regular <code>32 × 28 = 896</code> cuadrantes y recortar:</p>
+<ul>
+<li>Última columna (qx=31): cuadrantes de <code>48 × 50</code> celdas válidas.</li>
+<li>Última fila (qz=27): cuadrantes de <code>50 × 43</code> celdas válidas.</li>
+<li>Esquina inferior derecha (qx=31, qz=27): <code>48 × 43</code> celdas válidas.</li>
+</ul>
+<p>Las celdas <strong>fuera del DEM</strong> dentro de un cuadrante recortado se rellenan
+con <code>y_superficie = 0</code> y <code>fuel_coefficient = 0.0</code> (sentinel: nunca arden,
+son terreno virtual).</p>
+<h3 id="vecindad-moore-8">Vecindad Moore (8)</h3>
+<p>Cada cuadrante interior tiene 8 vecinos (los 8 cuadrantes que rodean al
+suyo). Esquinas: 3. Bordes no esquina: 5. Esto se valida en los tests.</p>
+<h3 id="mapeo-elevacion-nivel-vertical">Mapeo elevación → nivel vertical</h3>
+<pre><code class="language-python">t = (elev_m - ELEV_MIN) / (ELEV_MAX - ELEV_MIN)
+y = round(t * (NIVELES_Y - 1))     # 0..19
+</code></pre>
+<p>20 niveles cubren los 146 m de desnivel del DEM, ~7.3 m por nivel. El doc
+del rediseño dice "~5 m" pero se priorizó usar literalmente los 20 niveles
+para mantener el SubGrid pequeño.</p>
+<h3 id="pendiente">Pendiente</h3>
+<p>Se calcula con <code>np.gradient</code> sobre el bloque del DEM correspondiente al
+cuadrante. Se guarda:</p>
+<ul>
+<li><code>pendiente_media</code>: módulo medio del gradiente.</li>
+<li><code>pendiente_dir</code>: dirección media (Vec2 sobre XZ).</li>
+</ul>
+<hr>
+<h2 id="formato-binario">Formato binario</h2>
+<p>Little-endian, sin padding. Ver detalle: <a href="world.html">world › Formato binario de world.dat</a>.</p>
+<pre><code class="language-python">HEADER_FMT      = &quot;&lt;4sHHBBBBB&quot;
+QUAD_HEADER_FMT = &quot;&lt;Ifffff&quot;     # id + 5 floats
+CELL_FMT        = &quot;&lt;Bf&quot;          # y_sup + fuel
+</code></pre>
+<hr>
+<h2 id="uso">Uso</h2>
+<pre><code class="language-bash">tools/.venv/bin/python tools/build_world.py
+# → data/world.dat (~11 MB)
+</code></pre>
+<p>El script verifica que <code>heightmap_16bit.png</code> mide exactamente 1598×1393.
+Si no, falla con un mensaje claro.</p>
+<hr>
+<h2 id="tests">Tests</h2>
+<p>13 asserts en <code>tools/test_build_world.py</code>:</p>
+<ul>
+<li>Header correcto: magic, dims, conteos.</li>
+<li>896 cuadrantes generados, ids secuenciales.</li>
+<li><code>origen</code> = <code>(qx*50, qz*50)</code> exacto.</li>
+<li>Vecinos: 3 en esquinas, 5 en bordes, 8 en interior.</li>
+<li>Sin duplicados ni autorreferencias en <code>vecinos</code>.</li>
+<li><code>y_superficie ∈ [0, 19]</code>.</li>
+<li>Cuadrante interior tiene <code>fuel = 1.0</code> en todas las celdas.</li>
+<li><strong>El total de celdas con <code>fuel = 1.0</code> cuadra con <code>1598 × 1393 = 2.226.014</code></strong>
+  — esto demuestra que el recorte de bordes es exacto: ni una celda válida
+  perdida, ni una sentinel contada como válida.</li>
+</ul>
+<pre><code class="language-bash">cd tools &amp;&amp; .venv/bin/python -m pytest test_build_world.py -v
+</code></pre>
+<hr>
+<h2 id="sincronia-con-el-motor">Sincronía con el motor</h2>
+<p><code>build_world.py</code> y <code>engine/world.h</code> son las <strong>dos caras del mismo formato</strong>.
+Cualquier cambio (constantes, orden de campos, tipos) debe aplicarse a ambos
+y comprobarse con:</p>
+<pre><code class="language-bash">tools/.venv/bin/python tools/build_world.py    # genera
+bash engine/test_world_loader.sh               # valida que el motor lo lee bien
+</code></pre>
+<hr>
+<h2 id="lo-que-aun-no-hace">Lo que aún no hace</h2>
+<ul>
+<li>No usa imagen hiperespectral: <code>fuel_coefficient</code> es <code>1.0</code> para todas las
+  celdas del DEM. Cuando se integre, este es el lugar donde el coeficiente
+  por especie pasaría a <code>world.dat</code>.</li>
+<li>No calcula caminos forestales ni cortafuegos. Esos podrían entrar como
+  un <code>fuel_coefficient = 0.0</code> en columnas específicas.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

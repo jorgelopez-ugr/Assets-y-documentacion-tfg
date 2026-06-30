@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor de fuego — las operaciones del tick y cómo se combinan · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Motor de fuego — las operaciones del tick y cómo se combinan</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Ficha de fondo para entender el motor C++ y poder explicarlo en la memoria/defensa.
+Cubre QUÉ hace cada fase de un tick, QUÉ datos toca, y —lo más importante— CÓMO
+se combinan para que el fuego se propague. Foco especial en la <strong>presión</strong>, que
+es la fase más cara (~72%) y la menos intuitiva.</p>
+</blockquote>
+<hr>
+<h2 id="0-el-modelo-en-una-frase">0. El modelo en una frase</h2>
+<p>El motor trata el aire como un <strong>fluido</strong> sobre una rejilla 3D de celdas. El fuego
+calienta el aire; el aire caliente sube (buoyancy); la presión obliga a ese aire a
+moverse de forma realista (incompresible); la advección transporta el calor con el
+aire; y la reacción decide qué celdas prenden y cuáles se apagan. En <strong>modo
+superficie</strong> todo esto se confina a una lámina fina (el suelo + 1 capa de aire),
+que es donde vive el producto del TFG (cortafuegos).</p>
+<h2 id="1-los-datos-que-guarda-cada-celda">1. Los datos: qué guarda cada celda</h2>
+<p>Cada <code>Celda</code> tiene (ver <code>engine/celda.h</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Campo</th>
+<th>Significado</th>
+<th>Quién lo escribe</th>
+<th>Quién lo lee</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>state</code></td>
+<td>AIR/FUEL/BURNING/SMOKE/EMPTY/CORTAFUEGOS</td>
+<td>reacción, adyacencia, firebreak</td>
+<td>todas</td>
+</tr>
+<tr>
+<td><code>temperature</code></td>
+<td>temperatura (°C)</td>
+<td>ignición, sostener, advección, enfriamiento</td>
+<td>buoyancy, reacción</td>
+</tr>
+<tr>
+<td><code>velocity</code> (Vec3)</td>
+<td>velocidad del aire (m/s)</td>
+<td>viento, buoyancy, presión</td>
+<td>presión, advección</td>
+</tr>
+<tr>
+<td><code>pressure</code></td>
+<td>presión del fluido (Pa)</td>
+<td>presión (Jacobi)</td>
+<td>presión</td>
+</tr>
+<tr>
+<td><code>reaction</code></td>
+<td>combustible restante Y∈[0,1]</td>
+<td>reacción</td>
+<td>reacción</td>
+</tr>
+<tr>
+<td><code>density</code></td>
+<td>densidad de humo</td>
+<td>(nadie lo genera — ver issue)</td>
+<td>buoyancy</td>
+</tr>
+<tr>
+<td><code>fuel_coefficient</code></td>
+<td>cuánto arde (0–1)</td>
+<td>firebreak</td>
+<td>reacción, ignición</td>
+</tr>
+</tbody>
+</table>
+<p>Idea clave: el fuego no es "una cosa", es el <strong>resultado</strong> de cómo evolucionan
+<code>temperature</code>, <code>velocity</code> y <code>state</code> celda a celda.</p>
+<h2 id="2-el-orden-del-tick-importa">2. El orden del tick (importa)</h2>
+<p>En <code>Simulacion::tick()</code>, por cada cuadrante activo y en este orden:</p>
+<pre><code>viento → buoyancy → presión → advección → reacción (+adyacencia) → sostener
+        └─────────── construyen el campo de velocidad ──────────┘   └ transporta ┘   └ qué prende/apaga ┘
+luego, una vez por tick (no por cuadrante): halos → desactivación → activación
+</code></pre>
+<p>El orden no es arbitrario: cada fase usa el resultado de la anterior. Vamos una a una.</p>
+<hr>
+<h2 id="3-fase-a-fase">3. Fase a fase</h2>
+<h3 id="31-viento-aplicarviento-opcional">3.1 Viento (<code>aplicarViento</code>, opcional)</h3>
+<p>Suma una velocidad global al campo (<code>velocity</code>) de las celdas gaseosas
+(AIR/BURNING/SMOKE; NO a FUEL, que es "suelo"). Es el primer empujón horizontal.
+Si no hay viento, no hace nada. <em>(En superficie su efecto queda atenuado por la
+adyacencia — es sobre todo demo del modo volumétrico.)</em></p>
+<h3 id="32-buoyancy-flotabilidad-aplicarbuoyancy">3.2 Buoyancy / flotabilidad (<code>aplicarBuoyancy</code>)</h3>
+<p>El aire caliente pesa menos y sube. Para cada celda BURNING/SMOKE:</p>
+<pre><code>fuerza = A · temperatura − B · densidad
+velocity.(vertical) += fuerza · dt
+</code></pre>
+<p>Es decir: <strong>convierte el calor en un empujón hacia arriba.</strong> Esta es la única
+fase que mete energía "de movimiento" a partir del calor. (El término <code>B·densidad</code>
+hoy es 0 siempre — ver issue del <code>density</code> muerto.)</p>
+<h3 id="33-presion-resolverpresion-la-cara-72">3.3 Presión (<code>resolverPresion</code>) — LA CARA (~72%)</h3>
+<p><strong>El problema que resuelve.</strong> Tras la buoyancy, el campo de velocidad es
+"tramposo": hay celdas donde entra más aire del que sale (se comprimiría) o al
+revés (se expandiría). Un fluido real es <strong>incompresible</strong>: en cada celda, lo que
+entra = lo que sale. La presión arregla el campo para que cumpla eso. En la jerga
+de simulación de fluidos esto se llama el <strong>paso de proyección</strong> (Chorin).</p>
+<p><strong>Los 3 sub-pasos:</strong></p>
+<ol>
+<li>
+<p><strong>Divergencia</strong> (<code>calcularDivergencia</code>): mide en cada celda el "desajuste":
+   <code>div = (vx_der − vx_izq) + (vy_arr − vy_abj) + (vz_frt − vz_atr)</code>
+   div &gt; 0 → sale más de lo que entra (fuente); div &lt; 0 → sumidero. Queremos div=0
+   en todas partes.</p>
+</li>
+<li>
+<p><strong>Resolver la presión (Jacobi)</strong> — el bucle caro. Buscamos un campo de presión
+   <code>p</code> tal que su "curvatura" compense la divergencia. La ecuación es la de
+   <strong>Poisson</strong>:
+   <code>∇²p = div        (∇² = laplaciano: cómo difiere p de la media de sus vecinos)</code>
+   No se resuelve de golpe (sería invertir una matriz gigante). Se resuelve
+   <strong>iterando</strong>: el método de <strong>Jacobi</strong> repite muchas veces
+   <code>p_nuevo(celda) = (suma de la p de los 6 vecinos − div(celda)) / 6</code>
+   Cada barrido acerca un poco la presión a la solución; tras suficientes barridos,
+   converge. <strong>Aquí está el 72%</strong>: hasta 30 barridos × 6 lecturas por celda × todas
+   las celdas activas.</p>
+</li>
+</ol>
+<p><em>Analogía</em>: una sala con gente apretujada. La presión es "hacia dónde redistribuir
+   los empujones para que nadie se amontone ni quede hueco". Jacobi = rondas de
+   "cada uno mira a sus vecinos y se reajusta", repetidas hasta el equilibrio.</p>
+<ol start="3">
+<li><strong>Corregir velocidad</strong> (<code>corregirVelocidad</code>): se resta el <strong>gradiente</strong> de la
+   presión a la velocidad:
+   <code>velocity −= ∇p</code>
+   Esto elimina la parte compresible. El resultado: un campo de velocidad
+   incompresible (div ≈ 0).</li>
+</ol>
+<p><strong>Optimizaciones que ya tiene</strong> (de MVP5/6):
+- <em>Warm-start</em>: empieza Jacobi con la presión del tick anterior (suele estar cerca).
+- <em>Early-stop</em>: si un barrido apenas cambia la presión (max|Δp| &lt; ε), corta antes
+  de las 30 iteraciones. En la práctica converge en <strong>~7 iteraciones de media</strong>
+  (no 30). Por eso bajar el cap no ayudaría: la media ya está muy por debajo.
+- <em>Divergencia precomputada</em>: la velocidad no cambia durante Jacobi, así que la
+  divergencia se calcula UNA vez antes del bucle (no en cada iteración).
+- <em>Buffers ping-pong</em>: dos buffers de presión que se alternan con punteros, cero
+  copias por iteración.</p>
+<p><strong>Por qué es inherentemente cara</strong>: una proyección de presión real es resolver un
+sistema acoplado (la presión de cada celda depende de la de sus vecinos, que
+dependen de las suyas…). Es global, por eso necesita iterar. No es desperdicio;
+es el precio de un fluido incompresible de verdad.</p>
+<h3 id="34-adveccion-advectar-la-2a-mas-cara-20">3.4 Advección (<code>advectar</code>) — la 2ª más cara (~20%)</h3>
+<p>Transporta los campos (<code>temperature</code>, <code>density</code>, <code>reaction</code>) <strong>siguiendo la
+velocidad</strong>. Usa el método <strong>semi-Lagrangiano</strong>: para saber el valor futuro de una
+celda, mira "de dónde venía" el fluido (retrocede por la velocidad) e interpola
+ahí. Con corrección <strong>MacCormack</strong> (un paso adelante + uno atrás) para reducir el
+emborronamiento numérico. <em>(Hoy advecta 3 campos pero solo <code>temperature</code> importa —
+ver issue.)</em></p>
+<p>Es lo que de verdad <strong>mueve el calor de una celda a otra</strong>.</p>
+<h3 id="35-reaccion-aplicarreaccion-la-mas-barata-2">3.5 Reacción (<code>aplicarReaccion</code>) — la más barata (~2%)</h3>
+<p>Decide los cambios de estado y el ciclo de vida del fuego:
+- <strong>Encender</strong>: FUEL con <code>temperature &gt; 100°C</code> → BURNING (reaction=1).
+- <strong>Enfriar</strong> (#131): las celdas que no arden pierden calor (<code>T −= T·enfriamiento·dt</code>)
+  → el calor tiene alcance finito → la contención <strong>depende del ancho</strong>.
+- <strong>Apagar</strong>: BURNING gasta <code>reaction</code> (<code>−= k·dt·fuel</code>); al llegar a 0 → SMOKE.
+  Sin esto el fuego ardería para siempre y nunca dejaría ceniza.</p>
+<h3 id="36-ignicion-por-adyacencia-propagar_adyacencia-solo-superficie-132">3.6 Ignición por adyacencia (<code>propagar_adyacencia</code>, solo superficie, #132)</h3>
+<p>Una celda FUEL con un vecino BURNING (8-conexa) se enciende directamente →
+<strong>frente sólido</strong> sobre combustible contiguo, sin islas. No cruza CORTAFUEGOS/EMPTY.</p>
+<h3 id="37-sostener-sostener_burning">3.7 Sostener (<code>sostener_burning</code>)</h3>
+<p>Las celdas BURNING se re-fijan a <code>TEMP_IGNICION</code> (800°C) cada tick: son focos que
+siguen alimentando el calor mientras les quede <code>reaction</code>. Sin esto, la advección
+"drenaría" su calor a los vecinos y se enfriarían solas.</p>
+<h3 id="38-halos-activacion-desactivacion">3.8 Halos / activación / desactivación</h3>
+<ul>
+<li><strong>Halos</strong>: intercambian los bordes entre cuadrantes vecinos activos (para que el
+  fuego cruce de un cuadrante a otro).</li>
+<li><strong>Activación/desactivación</strong>: cuadrantes con actividad (BURNING o calor) se
+  activan; los que se enfrían se desactivan (liberan memoria). Es lo que hace que
+  el coste escale con el frente, no con el mapa entero.</li>
+</ul>
+<hr>
+<h2 id="4-como-se-combinan-la-cadena-que-propaga-el-fuego">4. Cómo se COMBINAN: la cadena que propaga el fuego</h2>
+<p>Esta es la parte que cuesta ver. La propagación lateral del fuego en la banda K=1
+es una <strong>reacción en cadena entre fases</strong>:</p>
+<pre><code>1. Una celda BURNING está caliente (800°C) y sostenida.
+        │  (sostener_burning)
+        ▼
+2. BUOYANCY convierte ese calor en empuje hacia arriba.
+        │  velocity.vertical += A·temp·dt
+        ▼
+3. Pero solo hay 1 capa de aire (K=1): el empuje &quot;choca con el techo&quot; → genera
+   DIVERGENCIA (el aire se amontona).
+        ▼
+4. PRESIÓN resuelve esa divergencia → redirige el empuje a flujo LATERAL
+   (el aire, al no poder subir, se desplaza de lado).
+        │  corregirVelocidad: velocity −= ∇p
+        ▼
+5. ADVECCIÓN transporta la temperatura siguiendo esa velocidad lateral → el calor
+   llega a las celdas de superficie vecinas.
+        ▼
+6. REACCIÓN: la celda FUEL vecina, ya por encima de 100°C, se ENCIENDE.
+   (Y la ADYACENCIA #132 enciende los vecinos contiguos directamente, dando el
+    frente sólido.)
+        ▼
+7. ENFRIAMIENTO: el calor decae con la distancia → un cortafuegos ANCHO enfría el
+   aire antes de que cruce; uno ESTRECHO no → contención dependiente del ancho.
+</code></pre>
+<p><strong>Dos mecanismos de propagación conviven</strong> (decisión de diseño):
+- <strong>Adyacencia</strong> (#132): rellena el frente sólido sobre combustible contiguo. Barata.
+- <strong>Fluido</strong> (buoyancy→presión→advección): permite que el calor <strong>cruce huecos</strong>
+  (cortafuegos) por el aire → es lo que hace que el ancho importe. Caro (la presión
+  es el 72%), pero es el precio de esa contención por ancho.</p>
+<blockquote>
+<p>Por eso, en el "juicio" de la presión, se decidió <strong>mantenerla</strong>: aunque la
+adyacencia ya propaga el fuego, la presión es lo único que da la <strong>contención
+dependiente del ancho</strong>, que es un resultado valioso del TFG.</p>
+</blockquote>
+<h2 id="5-modo-superficie-vs-volumetrico">5. Modo superficie vs volumétrico</h2>
+<ul>
+<li><strong>Superficie</strong> (producto): el aire por encima de la banda K=1 es <code>EMPTY</code> (inerte,
+  el solver lo salta). Barato y estable. Además corre enfriamiento y adyacencia.</li>
+<li><strong>Volumétrico</strong> (demo de la defensa): toda la columna de aire está viva; el
+  fuego/humo se mueven en 3D libre. Mismo motor, sin <code>EMPTY</code> ni enfriamiento ni
+  adyacencia → se preserva bit a bit (test de determinismo).</li>
+</ul>
+<h2 id="6-resumen-de-costes-de-surface_modemd">6. Resumen de costes (de <code>surface_mode.md</code>)</h2>
+<table>
+<thead>
+<tr>
+<th>fase</th>
+<th style="text-align: right;">% del tick</th>
+<th>¿qué aporta?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>presión</strong></td>
+<td style="text-align: right;">~72%</td>
+<td>incompresibilidad → propagación lateral + salto sobre cortafuegos</td>
+</tr>
+<tr>
+<td><strong>advección</strong></td>
+<td style="text-align: right;">~20%</td>
+<td>transporta el calor con la velocidad</td>
+</tr>
+<tr>
+<td>buoyancy</td>
+<td style="text-align: right;">~4%</td>
+<td>convierte calor en empuje vertical</td>
+</tr>
+<tr>
+<td>reacción</td>
+<td style="text-align: right;">~2%</td>
+<td>encender / enfriar / apagar</td>
+</tr>
+<tr>
+<td>resto (halos, act/desact)</td>
+<td style="text-align: right;">&lt;2%</td>
+<td>cuadrantes dinámicos</td>
+</tr>
+</tbody>
+</table>
+<p>La presión y la advección son caras porque son las dos operaciones <strong>globales</strong>
+(cada celda depende de sus vecinas). El resto son locales (una celda, sus propios
+datos).</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

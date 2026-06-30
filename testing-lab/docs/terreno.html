@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El terreno real y el A* sobre él</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · datos · <a href="index.html">índice</a></p>
+    <h1>El terreno real y el A* sobre él</h1>
+    <p class="sub">Las <strong>cuatro capas reales</strong> que ve el trazado
+      —elevación, pendiente, biomasa y especies protegidas— y el A* <strong>real</strong>
+      respondiendo a ellas. Nada sintético: son los datos del <code>world.dat</code>.</p>
+  </header>
+
+  <p>La página <a href="astar.html">del A*</a> explica el algoritmo sobre un terreno
+    inventado, ideal para entenderlo. Aquí, en cambio, se cargan los
+    <strong>datos reales</strong> del proyecto (heightmap de 16&nbsp;bits para la
+    elevación y la pendiente, <code>world.dat</code> para el combustible,
+    <code>especies_map.png</code> para la biodiversidad) y se traza el A* de verdad
+    sobre ellos.</p>
+
+  <!-- ═══════════════════════════ LAS CAPAS ════════════════════════════════ -->
+  <h2>Las cuatro capas del trazado</h2>
+  <figure>
+    <img src="../out/terreno_real.png" alt="Cuatro capas reales del terreno: elevación con relieve, pendiente, biomasa y especies protegidas">
+    <figcaption>
+      <b>Elevación</b> (1597–1743 m, con relieve sombreado): la forma del valle.
+      <b>Pendiente</b>: lo que el A* paga por subir — evita las laderas rojas.
+      <b>Biomasa / fuel</b>: lo que arde y lastra el camino. <b>Especies protegidas</b>:
+      2&nbsp;583 celdas valiosas (pino carrasco, encina, quejigo) que el trazado
+      penaliza atravesar y que la evaluación premia salvar.
+    </figcaption>
+  </figure>
+  <p>Estas son exactamente las matrices que consume la función de coste del A*
+    (<code>w_pendiente·pendiente + w_biomasa·fuel + w_especies·especie + w_longitud·paso</code>)
+    y las que usa la simulación de fuego — misma fuente, sin divergencias.</p>
+
+  <!-- ═══════════════════════════ SENSIBILIDAD ═════════════════════════════ -->
+  <h2>El A* responde al terreno: sensibilidad de la pendiente</h2>
+  <figure>
+    <img src="../out/terreno_astar.png" alt="Tres trazados A* sobre el terreno real con peso de pendiente creciente">
+    <figcaption>
+      El mismo origen y meta, subiendo el peso de la pendiente. Con
+      <code>w_pendiente=0</code> el A* <b>cruza la ladera</b> por el camino más corto
+      (1259 celdas). Al subirlo, deja de subir cuesta y la <b>contornea</b> por el
+      borde (1845 celdas): más largo, pero acumula mucha menos pendiente. Es el
+      <b>análisis de sensibilidad</b> que pide la propuesta, sobre el terreno de verdad.
+    </figcaption>
+  </figure>
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra</span>
+    Los pesos de la función de coste <strong>no son decorativos</strong>: cambian el
+    camino de forma cualitativa y medible. Un gestor que priorice el esfuerzo de
+    construcción (no subir laderas) obtiene un trazado distinto al que priorice la
+    longitud — y la herramienta lo expone con un slider.
+  </div>
+
+  <div class="nota">
+    <strong>Reproducible:</strong>
+    <code>testing-lab/.venv/bin/python testing-lab/experiments/terreno_real.py</code>.
+    El test <code>tests/test_terreno_real.py</code> verifica que el camino es contiguo
+    entre los extremos y que subir el peso de pendiente reduce la pendiente acumulada
+    (lo contornea). El A* es el real de <code>api/pathfinding.py</code>.
+  </div>
+
+  <footer class="pie">
+    Vuelve al <a href="index.html">índice</a>, mira el
+    <a href="astar.html">algoritmo A* en detalle</a> o cómo estos caminos se
+    <a href="comparativa.html">puntúan con fuego real</a>.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortafuegos — `#70` — `FIREBREAK_UNDO_BATCH` y restore en `/reset` · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Cortafuegos — `#70` — `FIREBREAK_UNDO_BATCH` y restore en `/reset`</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="cortafuegos-69-comando-firebreak-batch.html">Cortafuegos — 69 — Comando FIREBREAK_BATCH</a> · <a href="mvp-arquitectura-de-cuadrantes.html">MVP — Arquitectura de Cuadrantes</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Segunda pieza del milestone "Cortafuegos pintables desde Godot"</strong>:
+  el motor expone un comando <code>FIREBREAK_UNDO_BATCH</code> que deshace
+  cortafuegos previamente pintados y modifica <code>Simulacion::reset()</code>
+  para restaurar los <code>fuel_coefficient</code> desde el mapa de miguitas
+  introducido en <a href="cortafuegos-69-comando-firebreak-batch.html">#69</a>.</li>
+<li><strong><code>/reset</code> ya no necesita releer <code>world.dat</code></strong>: con N ≤ 1000 celdas
+  pintadas en una sesión típica, el coste es O(N) sobre el mapa
+  de miguitas. Mucho más barato que un I/O al disco.</li>
+<li><strong>Determinismo end-to-end</strong>: pintar + reset + ignite + 5 ticks
+  produce el mismo estado celda-por-celda que ignite + 5 ticks desde
+  un mundo recién arrancado. Garantía que no teníamos sin restore.</li>
+<li><strong>Nivel B en el undo</strong>: si el cuadrante está ACTIVO y la Celda viva
+  está en AIR con fuel original &gt; 0, el undo la vuelve a FUEL. Si está
+  en FUEL (pincel parcial deshecho), restaura <code>cell.fuel_coefficient</code>.
+  Si está BURNING/SMOKE, NO se toca (decisión 1: no des-apagar).</li>
+<li><strong>Cero regresiones</strong>: 31 motor (<code>test_main.sh</code>) + 74 motor
+  (<code>test_simulacion.sh</code>) + 46 API. 24 asserts nuevos.</li>
+</ul>
+<h2 id="por-que-hace-falta-esta-issue">Por qué hace falta esta issue</h2>
+<p>Sin el restore, una sesión de Godot pintaría cortafuegos, simularía,
+luego pulsaría "reset" para empezar de nuevo… y el mapa quedaría
+permanentemente alterado. La única forma de volver a un estado limpio
+sería matar el motor y relanzarlo (que sí relee <code>world.dat</code>). UX
+inaceptable.</p>
+<p><a href="cortafuegos-69-comando-firebreak-batch.html">#69</a> dejó el mapa de
+miguitas listo para esto. #70 cierra el ciclo.</p>
+<h2 id="decisiones-cerradas-handoff-decision-5">Decisiones cerradas (HANDOFF, decisión 5)</h2>
+<table>
+<thead>
+<tr>
+<th>Aspecto</th>
+<th>Decisión</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DELETE de celda no pintada</td>
+<td>No-op silencioso (no error).</td>
+</tr>
+<tr>
+<td>DELETE en cuadrante activo + AIR + original &gt; 0</td>
+<td>Volver a FUEL con el original.</td>
+</tr>
+<tr>
+<td>DELETE en cuadrante activo + FUEL (parcial deshecho)</td>
+<td>Restaurar <code>cell.fuel_coefficient</code>.</td>
+</tr>
+<tr>
+<td>DELETE en BURNING/SMOKE</td>
+<td>NO tocar la Celda viva. La estática SÍ se restaura.</td>
+</tr>
+<tr>
+<td><code>/reset</code></td>
+<td>Iterar miguitas, restaurar todo, limpiar mapa. NO releer disco.</td>
+</tr>
+</tbody>
+</table>
+<p>La decisión sobre BURNING/SMOKE merece un matiz: si una celda fue
+pintada (<code>fuel_coefficient</code> estática puesta a 0) y luego, por
+convección, reignitó como BURNING, deshacer el cortafuegos:
+- restaura la copia estática al original (la próxima vez que se
+  reactive el cuadrante con <code>activar</code>, leerá el valor restaurado);
+- pero NO toca la Celda viva, que sigue ardiendo con su dinámica.</p>
+<p>Es coherente: la motosierra no apaga incendios, así que tampoco
+"des-apaga".</p>
+<h2 id="diseno">Diseño</h2>
+<h3 id="simulacionhdeshacer_firebreak"><code>simulacion.h::deshacer_firebreak</code></h3>
+<pre><code class="language-cpp">void deshacer_firebreak(int wx, int wz);
+</code></pre>
+<p>Algoritmo (espejo de <code>pintar_firebreak</code>):</p>
+<ol>
+<li><strong>Validación</strong> de <code>wx&lt;0 || wz&lt;0</code> y rango de cuadrantes.</li>
+<li><strong>Consulta</strong>: <code>key = (qid &lt;&lt; 32) | idx</code>. Si no está en
+   <code>fuel_modificado_</code>, no-op (silencioso).</li>
+<li><strong>Restore estático</strong>: <code>c.fuel_coefficient[idx] = original</code>. Borrar
+   entrada del mapa.</li>
+<li><strong>Nivel B</strong>: si el cuadrante está ACTIVO:
+   - <code>state == FUEL</code> → <code>cell.fuel_coefficient = original</code>.
+   - <code>state == AIR &amp;&amp; original &gt; 0</code> → <code>state = FUEL</code>,
+     <code>cell.fuel_coefficient = original</code>.
+   - <code>BURNING || SMOKE</code> → no tocar la viva.</li>
+</ol>
+<h3 id="simulacionhreset"><code>simulacion.h::reset</code></h3>
+<p>Antes de desactivar cuadrantes (limpiar SubGrids, vaciar <code>activos_</code>),
+iteramos el mapa de miguitas y restauramos cada <code>fuel_coefficient</code> a
+su valor original:</p>
+<pre><code class="language-cpp">for (const auto&amp; [key, original] : fuel_modificado_) {
+    const uint32_t qid = static_cast&lt;uint32_t&gt;(key &gt;&gt; 32);
+    const int idx = static_cast&lt;int&gt;(key &amp; 0xFFFFFFFFu);
+    world_.cuadrantes[qid].fuel_coefficient[idx] = original;
+}
+fuel_modificado_.clear();
+</code></pre>
+<p>Por qué basta con la copia estática y no necesito tocar SubGrids:
+los SubGrids se vacían justo después (<code>c.grid.cells.clear()</code>). Cuando
+el cuadrante vuelva a <code>activar</code> en una sesión futura, leerá el
+<code>fuel_coefficient</code> restaurado y reconstruirá la Celda con state =
+FUEL natural.</p>
+<h3 id="maincppfirebreak_undo_batch"><code>main.cpp::FIREBREAK_UNDO_BATCH</code></h3>
+<p>Cabecera:</p>
+<pre><code>FIREBREAK_UNDO_BATCH &lt;N&gt;
+&lt;x1&gt; &lt;z1&gt;
+&lt;x2&gt; &lt;z2&gt;
+...
+&lt;xN&gt; &lt;zN&gt;
+</code></pre>
+<p>Respuesta:</p>
+<pre><code>FIREBREAK_UNDO_DONE &lt;N_procesadas&gt;
+</code></pre>
+<p>A diferencia de <code>FIREBREAK_BATCH</code>, no hay intensidad — el restore
+consulta el original guardado.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="c-test_simulacioncpp-7-funciones-20-asserts">C++ (<code>test_simulacion.cpp</code>) — 7 funciones, 20 asserts</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Qué cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_firebreak_undo_restaura_estatico</code></td>
+<td>Pintar + deshacer en cuadrante INACTIVO restaura el valor y borra la miguita.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_undo_nunca_pintada_es_noop</code></td>
+<td>Deshacer una celda nunca pintada no toca nada y no crashea.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_undo_activo_AIR_vuelve_a_FUEL</code></td>
+<td>Cuadrante ACTIVO + intensidad=1 (AIR) → undo → state vuelve a FUEL.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_undo_activo_FUEL_parcial</code></td>
+<td>Cuadrante ACTIVO + intensidad=0.5 (sigue FUEL) → undo → fuel original.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_undo_no_toca_BURNING</code></td>
+<td>Celda BURNING tras pintar+reignitar: undo restaura estática pero NO la viva.</td>
+</tr>
+<tr>
+<td><code>test_reset_restaura_fuel_y_limpia_miguitas</code></td>
+<td>reset() restaura dos cuadrantes pintados y vacía el mapa.</td>
+</tr>
+<tr>
+<td><code>test_reset_seguido_de_ignite_es_determinista</code></td>
+<td>pintar + reset + ignite + 5 ticks ≡ ignite + 5 ticks limpio.</td>
+</tr>
+</tbody>
+</table>
+<p>El último es la garantía end-to-end del milestone: el reset deja el
+motor en el mismo estado físico que recién arrancado.</p>
+<h3 id="bash-test_mainsh-4-asserts">Bash (<code>test_main.sh</code>) — 4 asserts</h3>
+<ul>
+<li><code>FIREBREAK_UNDO_DONE 2</code> tras deshacer 2 celdas previamente pintadas.</li>
+<li><code>FIREBREAK_UNDO_DONE 0</code> con lote vacío.</li>
+<li><code>FIREBREAK_UNDO_BATCH</code> sobre celda nunca pintada no crashea.</li>
+<li><code>RESET</code> tras pintar+ignite+tick sigue desactivando todos los
+  cuadrantes (<code>TICK_DONE = 0</code> en el siguiente tick).</li>
+</ul>
+<h3 id="resultados">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#69)</th>
+<th style="text-align: right;">Después (#70)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">27 OK</td>
+<td style="text-align: right;"><strong>31 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">54 OK</td>
+<td style="text-align: right;"><strong>74 OK</strong></td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">46 OK</td>
+<td style="text-align: right;">46 OK (sin tocar)</td>
+</tr>
+<tr>
+<td>Determinismo numérico (snapshot 10 ticks)</td>
+<td style="text-align: right;">OK</td>
+<td style="text-align: right;"><strong>OK sin re-snapshotar</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/simulacion.h</code>:</li>
+<li><code>void deshacer_firebreak(int wx, int wz)</code> — restore con propagación
+    a SubGrid si activo.</li>
+<li><code>reset()</code> ahora itera <code>fuel_modificado_</code>, restaura los <code>fuel_coefficient</code>
+    y limpia el mapa antes de desactivar cuadrantes.</li>
+<li><code>engine/main.cpp</code>:</li>
+<li>Handler <code>FIREBREAK_UNDO_BATCH</code> que lee la cabecera + N líneas y emite
+    <code>FIREBREAK_UNDO_DONE &lt;N&gt;</code>.</li>
+<li>Cabecera de comentarios del protocolo actualizada con el comando nuevo.</li>
+<li><code>engine/test_simulacion.cpp</code>:</li>
+<li>7 funciones de test nuevas (20 asserts) registradas en <code>main()</code>.</li>
+<li><code>engine/test_main.sh</code>:</li>
+<li>4 asserts del protocolo (UNDO + edge cases + interacción con RESET).</li>
+</ul>
+<h2 id="coste-de-reset-con-n-celdas-pintadas">Coste de <code>/reset</code> con N celdas pintadas</h2>
+<p><code>/reset</code> añade un loop O(N) sobre el mapa de miguitas. Estimaciones:</p>
+<ul>
+<li>N = 100 (sesión corta, una franja pequeña): ~unos pocos µs.</li>
+<li>N = 1000 (varias franjas, caso típico): ~50 µs.</li>
+<li>N = 10000 (caso patológico, brocha barriendo medio mapa): ~500 µs.</li>
+</ul>
+<p>Comparado con la lógica de reset previa (vaciar SubGrids de todos los
+cuadrantes activos), el coste de la restauración de miguitas es
+despreciable. No vale la pena medirlo en bench.</p>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong>Restore estático antes de tocar SubGrids</strong>. La alternativa era
+   restaurar también la Celda viva en cada cuadrante activo. Pero
+   los SubGrids se vacían en el mismo <code>reset()</code>, así que no aporta
+   nada — la próxima <code>activar()</code> los reconstruirá desde la estática
+   ya restaurada. Una sola fuente de verdad.</p>
+</li>
+<li>
+<p><strong>No relelectura de <code>world.dat</code></strong>. El mapa de miguitas es la
+   memoria de "qué se cambió" en esta sesión. Releer el disco sería
+   I/O innecesario y rompería la propiedad de que el motor es un
+   proceso persistente independiente del filesystem.</p>
+</li>
+<li>
+<p><strong><code>deshacer_firebreak</code> valida <code>wx&lt;0 || wz&lt;0</code></strong>. Mismo razonamiento
+   que en #69: división entera C++ trunca hacia cero, así que el
+   filtro de cuadrante no detecta coordenadas negativas. Necesario
+   para no acceder a <code>fuel_coefficient[-1]</code>.</p>
+</li>
+<li>
+<p><strong>Nivel B en undo restaura también el caso FUEL parcial</strong>. Si se
+   pintó con intensidad=0.5, la celda sigue siendo FUEL pero con
+   fuel reducido. Al deshacer, hay que restaurar <code>cell.fuel_coefficient</code>
+   aunque el state no cambie. Es lo que hace <code>if (state == FUEL)</code>.</p>
+</li>
+<li>
+<p><strong>Test de determinismo end-to-end</strong>. Vale más que cinco asserts
+   sueltos: pintar + reset + ignite + 5 ticks debe ser bit-equivalente
+   a ignite + 5 ticks limpio. Si hay alguna fuga de estado (algún
+   campo del SubGrid que no se vacía bien tras reset, alguna miguita
+   no restaurada), este test lo caza.</p>
+</li>
+</ol>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="70-entrega-los-criterios-de-aceptacion-al-100">70 entrega los criterios de aceptación al 100 %:</h1>
+<ul>
+<li>[x] Compila sin warnings.</li>
+<li>[x] Tests existentes pasan (cero regresiones).</li>
+<li>[x] DELETE restaura <code>fuel_coefficient</code> al valor original.</li>
+<li>[x] DELETE de celda nunca pintada es no-op.</li>
+<li>[x] DELETE en cuadrante ACTIVO con celda AIR + original &gt; 0 → vuelve a FUEL.</li>
+<li>[x] DELETE en celda BURNING/SMOKE no toca la Celda viva.</li>
+<li>[x] <code>/reset</code> restaura todos y vacía el mapa.</li>
+<li>[x] Tras <code>/reset</code>, ignite+tick produce el mismo resultado que sin pintar.</li>
+<li>[x] Test del protocolo en <code>test_main.sh</code>.</li>
+</ul>
+<p><strong>Siguiente</strong>: <a href="cortafuegos-71-endpoints-api.html">Cortafuegos — #71</a> (cuando
+exista). El motor ya tiene los dos verbos del protocolo (<code>FIREBREAK_BATCH</code>
+y <code>FIREBREAK_UNDO_BATCH</code>); falta exponerlos como <code>POST /firebreak</code> y
+<code>DELETE /firebreak</code> en FastAPI con validación de payload.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

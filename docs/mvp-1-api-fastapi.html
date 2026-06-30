@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 1 — API FastAPI · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 1 — API FastAPI</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<h2 id="objetivo">Objetivo</h2>
+<p>Crear la capa de orquestación entre el motor C++ y Godot. La API gestiona el estado
+de la simulación en memoria y expone endpoints HTTP.</p>
+<hr>
+<h2 id="decisiones-arquitectonicas">Decisiones arquitectónicas</h2>
+<ol>
+<li>
+<p><strong>API stateful</strong> — guarda el estado completo del grid en memoria entre peticiones.
+   Godot solo llama a <code>/tick</code>; no necesita reenviar el estado completo.</p>
+</li>
+<li>
+<p><strong>Una simulación a la vez</strong> — sin concurrencia, sin gestión de sesiones.
+   Un único estado global en memoria.</p>
+</li>
+<li>
+<p><strong>Parámetros del motor con valores por defecto</strong> — preparados para recibir
+   configuración desde Godot en una iteración futura.</p>
+</li>
+</ol>
+<hr>
+<h2 id="issues-cerradas">Issues cerradas</h2>
+<h3 id="10-estructura-base"><code>#10</code> — Estructura base</h3>
+<ul>
+<li>Carpeta <code>api/</code> con <code>main.py</code>, <code>requirements.txt</code></li>
+<li><code>GET /</code> devuelve <code>{"status": "ok"}</code></li>
+</ul>
+<h3 id="11-estado-en-memoria-statepy"><code>#11</code> — Estado en memoria (<code>state.py</code>)</h3>
+<ul>
+<li>Cuatro funciones: <code>get()</code>, <code>set()</code>, <code>clear()</code>, <code>is_initialized()</code></li>
+<li>El estado es el mismo dict JSON que produce el motor — sin transformaciones</li>
+</ul>
+<h3 id="12-post-tick-y-motorpy"><code>#12</code> — <code>POST /tick</code> y <code>motor.py</code></h3>
+<ul>
+<li><code>motor.py</code> lanza el binario C++ como subprocess, le pasa el estado por stdin</li>
+<li>Endpoint <code>POST /tick</code>: estado de memoria → motor → actualiza memoria → devuelve nuevo estado</li>
+</ul>
+<h3 id="13-get-state"><code>#13</code> — <code>GET /state</code></h3>
+<ul>
+<li>Devuelve el estado actual sin avanzar tick</li>
+</ul>
+<h3 id="14-post-reset"><code>#14</code> — <code>POST /reset</code></h3>
+<ul>
+<li>Recibe estado inicial en el body, lo carga en memoria</li>
+<li>Modelo Pydantic <code>EstadoInicial</code> para validación automática</li>
+</ul>
+<h3 id="15-tests-de-integracion"><code>#15</code> — Tests de integración</h3>
+<ul>
+<li><code>test_integracion.py</code>: flujo reset → tick → state</li>
+<li>Verifica que varios ticks consecutivos reducen la coordenada de reacción</li>
+</ul>
+<hr>
+<h2 id="estado-al-cerrar-el-mvp">Estado al cerrar el MVP</h2>
+<pre><code>api/
+├── main.py              # GET /, POST /reset, POST /tick, GET /state
+├── motor.py             # subprocess.run por tick (mejorado en MVP 2)
+├── state.py             # estado en memoria
+├── requirements.txt
+├── test_state.py
+├── test_motor.py
+├── test_endpoints.py
+└── test_integracion.py
+</code></pre>
+<p>La API está lista para ser consumida desde Godot o cualquier cliente HTTP.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

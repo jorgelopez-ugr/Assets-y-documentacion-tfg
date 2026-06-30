@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reacción — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · operación 5 de 5 · <a href="index.html">índice</a></p>
+    <h1>La reacción — el fuego, de verdad</h1>
+    <p class="sub">Las otras operaciones mueven aire y calor; esta es la
+      combustión: qué hace que el combustible <strong>prenda</strong>, cómo se
+      <strong>consume</strong> hasta apagarse, y el <strong>enfriamiento</strong>
+      que da contención al cortafuegos — el corazón del TFG.</p>
+  </header>
+
+  <!-- ════════════════════════════════ QUÉ HACE ════════════════════════════ -->
+  <h2>Qué hace la función</h2>
+  <p>La función real es
+    <a href="../../engine/reaccion.h"><code>aplicarReaccion</code></a>, y es
+    puramente local (cada celda decide por sí misma). Hace tres cosas:</p>
+
+  <div class="eq" style="text-align:left; font-size:1.05rem">
+    <b>1 · Ignición:</b> &nbsp; FUEL &amp; temp &gt; 100&nbsp;°C &nbsp;→&nbsp; BURNING, &nbsp; Y = 1 <br><br>
+    <b>2 · Quemado:</b> &nbsp; ∂Y/∂t = −k · fuel_coef &nbsp;&nbsp;·&nbsp;&nbsp; Y ≤ 0 → SMOKE <br><br>
+    <b>3 · Enfriamiento:</b> &nbsp; temp −= temp · enfriamiento · dt &nbsp; <small>(celdas NO ardiendo)</small>
+    <small>Y ∈ [0,1] es la coordenada de reacción: 1 = combustible lleno, 0 = agotado</small>
+  </div>
+
+  <!-- ═══════════════════════════ CICLO DE VIDA ════════════════════════════ -->
+  <h2>Ciclo de vida del fuego: prender → consumir → humo</h2>
+  <p>Una celda de combustible que recibe calor suficiente prende (salta a
+    <code>BURNING</code> con el depósito lleno, Y&nbsp;=&nbsp;1). A partir de ahí
+    consume combustible a ritmo <code>k</code> por segundo; cuando Y llega a 0, se
+    apaga y pasa a humo (<code>SMOKE</code>). Cuánto dura depende del material:</p>
+
+  <figure>
+    <img src="../out/reaccion.png" alt="Curvas de quemado (reaction) y de enfriamiento">
+    <figcaption>
+      <b>Izquierda:</b> el salto 0→1 en el tick 1 es la <b>ignición</b>; luego la
+      recta bajando es el <b>quemado</b> (Y se consume) hasta 0 → SMOKE (la X).
+      Más <code>k</code> o más <code>fuel_coef</code> → arde más rápido (matorral
+      fino vs tronco denso). <b>Derecha:</b> el <b>enfriamiento</b> ambiente — una
+      celda caliente que no arde pierde temperatura exponencialmente; sin él
+      (azul) la temperatura no baja nunca.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    El fuego tiene un <strong>ciclo de vida finito</strong>: prende por umbral,
+    consume su combustible a un ritmo que fija el material, y muere a humo. El
+    parámetro <code>k</code> es lo que distingue un matorral (arde y se apaga
+    rápido) de un tronco (arde despacio y mucho rato).
+  </div>
+
+  <!-- ═══════════════════════════ CONTENCIÓN ═══════════════════════════════ -->
+  <h2>El enfriamiento = la contención del cortafuegos</h2>
+  <p>Aquí está el porqué de fondo, y es lo más importante del proyecto. Sin
+    enfriamiento, el calor que la <a href="adveccion.html">advección</a> transporta
+    se acumularía sin pérdidas y acabaría cruzando cualquier hueco: el cortafuegos
+    nunca contendría nada. El término de enfriamiento le da al calor un
+    <strong>sumidero</strong>, y por tanto un <strong>alcance finito</strong>.</p>
+
+  <p>Lo medimos con un foco sostenido y un viento que arrastra el calor, variando
+    la tasa de enfriamiento:</p>
+
+  <figure>
+    <img src="../out/reaccion_alcance.png" alt="Perfil de temperatura y alcance para distintas tasas de enfriamiento">
+    <figcaption>
+      Temperatura frente a la distancia desde el foco, en régimen estacionario.
+      <b>Sin enfriamiento</b> (azul) el calor llega plano hasta el final — no hay
+      contención. Cuanto más enfría, más rápido cae la temperatura y más corto el
+      <b>alcance</b> (la distancia a la que aún supera el umbral de ignición de
+      100&nbsp;°C, los triángulos).
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/reaccion_alcance.gif" alt="Animación de los perfiles avanzando hasta estabilizarse">
+    <figcaption>Animado: el calor avanza desde el foco y se estabiliza, cada curva
+      en su alcance.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    El enfriamiento convierte "el calor llega infinitamente lejos" en "el calor
+    tiene un alcance". Y eso es justo lo que hace que un <strong>cortafuegos
+    funcione</strong>: si la franja despejada es <strong>más ancha que el
+    alcance</strong>, el calor no llega al combustible del otro lado por encima del
+    umbral, y el fuego no cruza. <strong>La contención depende del ancho</strong> —
+    el resultado central que el TFG necesita poder medir y ajustar.
+  </div>
+
+  <div class="nota">
+    <strong>Nota.</strong> El enfriamiento ambiente solo se aplica en el modo
+    superficie (el del producto); en volumétrico se pasa 0, para no alterar la
+    demo técnica ni el test de determinismo. La tasa es calibrable
+    (<code>set_enfriamiento</code>) precisamente para ajustar la distancia de
+    contención.
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/reaccion.py            # ciclo de vida + enfriamiento
+testing-lab/.venv/bin/python testing-lab/experiments/reaccion_alcance.py    # alcance / contención (+ GIF)
+testing-lab/.venv/bin/python testing-lab/tests/test_reaccion.py
+testing-lab/.venv/bin/python testing-lab/tests/test_reaccion_alcance.py</code></pre>
+
+  <footer class="pie">
+    Función real del motor: <code>aplicarReaccion</code>
+    (<code>engine/reaccion.h</code>). La reacción es local por celda; la demo de
+    alcance la combina con <code>advectar</code> para transportar el calor y ver
+    el efecto del sumidero. Umbral de ignición = 100&nbsp;°C.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error: SubViewportContainer dentro de CanvasLayer no renderiza · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Error: SubViewportContainer dentro de CanvasLayer no renderiza</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a></p>
+<p><strong>Milestone afectado:</strong> Integración Godot-Motor (#80, veleta del viento)
+<strong>Archivos involucrados:</strong> <code>godotUI/simulacion.gd</code></p>
+<hr>
+<h2 id="el-sintoma">El síntoma</h2>
+<p>La veleta 3D del viento (#80) se diseñó como widget HUD: un
+<code>SubViewport</code> con su propio <code>World3D</code> + <code>Camera3D</code> + flecha 3D
+que rota según el viento. Mostrada al usuario vía un <code>TextureRect</code>
+anclado a la esquina superior derecha.</p>
+<p>Primer intento:</p>
+<pre><code class="language-gdscript">veleta_sub_viewport = SubViewport.new()
+veleta_sub_viewport.own_world_3d = true
+add_child(veleta_sub_viewport)              # hijo del Node3D root
+# ... añadir flecha + cámara + luz al SubViewport ...
+
+# En _setup_hud:
+veleta_hud_rect = TextureRect.new()
+veleta_hud_rect.texture = veleta_sub_viewport.get_texture()
+veleta_hud_rect.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+veleta_hud_rect.position = Vector2(-200, 20)
+hud.add_child(veleta_hud_rect)              # hijo del CanvasLayer
+</code></pre>
+<p><strong>No se veía nada</strong> en la esquina. El usuario reportó:</p>
+<blockquote>
+<p>"La flecha es inexistente. Vamos a intentar arreglar eso."</p>
+</blockquote>
+<hr>
+<h2 id="por-que-pasaba-dos-problemas-combinados">Por qué pasaba (dos problemas combinados)</h2>
+<h3 id="1-viewporttexture-cruzando-subarboles">1. <code>ViewportTexture</code> cruzando subárboles</h3>
+<p>Cuando un <code>TextureRect</code> consume <code>SubViewport.get_texture()</code>, internamente
+guarda un <code>ViewportTexture</code> con la <strong>ruta relativa</strong> al SubViewport
+fuente. Si el TextureRect y el SubViewport viven en <strong>subárboles
+distintos</strong> (Node3D root vs CanvasLayer del HUD), Godot no resuelve
+la ruta correctamente y la textura queda vacía.</p>
+<p>Es comportamiento documentado en la docs de Godot pero no obvio.</p>
+<h3 id="2-canvaslayer-no-propaga-anchors">2. CanvasLayer no propaga anchors</h3>
+<p>Aunque resolviéramos el bug anterior, <strong>los <code>Control</code> colgados
+directamente del <code>CanvasLayer</code> no tienen un rect padre coherente</strong>
+contra el que resolver <code>set_anchors_preset(PRESET_TOP_RIGHT)</code>. El
+preset apunta a la esquina (1, 0), pero "uno" relativo a <em>nada</em>
+da posición ambigua.</p>
+<p>Resultado: el TextureRect quedaba en posición (0, 0) con tamaño
+posiblemente cero, sin renderizar.</p>
+<hr>
+<h2 id="la-solucion-dos-partes">La solución (dos partes)</h2>
+<h3 id="a-subviewportcontainer-en-lugar-de-texturerect-viewporttexture">a) <code>SubViewportContainer</code> en lugar de <code>TextureRect + ViewportTexture</code></h3>
+<p>El <code>SubViewportContainer</code> es un <code>Control</code> específico de Godot 4
+diseñado para envolver <code>SubViewport</code>s. Resuelve internamente la
+textura sin requerir paths cruzados:</p>
+<pre><code class="language-gdscript">veleta_container = SubViewportContainer.new()
+veleta_container.stretch = true
+veleta_container.size = VELETA_HUD_TAM
+
+veleta_sub_viewport = SubViewport.new()
+veleta_sub_viewport.world_3d = World3D.new()    # explícito
+veleta_container.add_child(veleta_sub_viewport)  # SubViewport hijo del Container
+</code></pre>
+<p>Aprendizaje secundario: <code>own_world_3d = true</code> es lazy; mejor
+asignar <code>world_3d = World3D.new()</code> directamente para garantizar
+que el mundo está listo en el primer frame.</p>
+<h3 id="b-wrapper-control-con-preset_full_rect-en-el-canvaslayer">b) Wrapper <code>Control</code> con <code>PRESET_FULL_RECT</code> en el CanvasLayer</h3>
+<p>Para que los anchors de hijos funcionen:</p>
+<pre><code class="language-gdscript">hud = CanvasLayer.new()
+add_child(hud)
+
+pantalla_hud = Control.new()
+pantalla_hud.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+pantalla_hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
+hud.add_child(pantalla_hud)
+
+# Ahora pantalla_hud SÍ tiene un rect coherente. Los hijos pueden
+# usar PRESET_TOP_RIGHT, PRESET_BOTTOM_LEFT, etc. y se resuelven
+# contra el viewport principal.
+pantalla_hud.add_child(veleta_container)
+</code></pre>
+<h3 id="c-camara-del-subviewport-con-current-true">c) Cámara del SubViewport con <code>current = true</code></h3>
+<p>Detalle final que aprendí: una <code>Camera3D</code> dentro de un SubViewport
+con <code>own_world_3d=true</code> <strong>no se hace current automáticamente</strong>.
+Hay que llamar <code>cam.current = true</code> <strong>después de añadirla al
+árbol</strong> (porque <code>make_current()</code> necesita estar en la jerarquía
+para registrarse en su Viewport).</p>
+<pre><code class="language-gdscript">var cam_widget := Camera3D.new()
+veleta_sub_viewport.add_child(cam_widget)        # primero al árbol
+cam_widget.global_position = Vector3(0, 18, 28)  # luego look_at
+cam_widget.look_at(Vector3.ZERO, Vector3.UP)
+cam_widget.current = true                        # registra como current
+</code></pre>
+<hr>
+<h2 id="resultado">Resultado</h2>
+<p>Tras los tres cambios, la veleta se ve en la esquina superior
+derecha, rotando con el viento y escalando con la magnitud, desde
+cualquier cámara del mundo (las 6 isométricas y la libre).</p>
+<hr>
+<h2 id="leccion-general">Lección general</h2>
+<blockquote>
+<p>En Godot 4, <code>CanvasLayer</code> no es un Control. Cualquier UI que
+requiera anchors <strong>necesita un Control wrapper con PRESET_FULL_RECT</strong>
+entre el CanvasLayer y los demás Controls.</p>
+<p>Para mostrar un SubViewport como widget en una UI, <strong>usar
+<code>SubViewportContainer</code> siempre</strong>. El path explícito con
+<code>ViewportTexture</code> puede fallar silenciosamente cuando el
+SubViewport y el consumidor viven en subárboles distintos.</p>
+</blockquote>
+<p>Ambas reglas son específicas de Godot 4 y no totalmente obvias en
+la documentación. Documentadas aquí para no repetir el ciclo en la
+fase de "HUD usable" del próximo milestone.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

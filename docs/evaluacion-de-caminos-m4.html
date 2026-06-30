@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Evaluación de caminos (M4) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Evaluación de caminos (M4)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>El núcleo científico del TFG: el fuego deja de ser una simulación y pasa a ser
+la <strong>función de evaluación</strong> que puntúa cada cortafuegos.
+Acompaña a <a href="trazado-automatico-a-coste-y-datos-m3.html">Trazado automático A — coste y datos (M3)</a> y <a href="contencion-del-cortafuegos-enfriamiento-m2.html">Contención del cortafuegos — enfriamiento (M2)</a>.</p>
+</blockquote>
+<h2 id="coste-del-trazado-vs-evaluacion">Coste del trazado vs evaluación</h2>
+<p>Son cosas distintas (la propuesta lo subraya):
+- <strong>Coste del trazado (A*, M3)</strong>: a priori, minimiza pendiente/longitud/biomasa/
+  especies para <em>proponer</em> el camino más barato.
+- <strong>Evaluación (M4)</strong>: a posteriori, simula el fuego y mide si el camino <em>funciona</em>
+  (contiene el incendio). La métrica final combina ambos.</p>
+<h2 id="escenario-de-evaluacion-decidido-con-el-usuario">Escenario de evaluación (decidido con el usuario)</h2>
+<ul>
+<li><strong>Focos de ignición</strong>: los marca el usuario (uno o varios). Máxima flexibilidad
+  para preguntar "si prende aquí, ¿aguanta el cortafuegos?".</li>
+<li><strong>Zona protegida</strong> = especies valiosas (pino carrasco, encina, quejigo, de
+  <code>especies_map.png</code>; mismas que penaliza el A*, configurable). Es lo que el
+  cortafuegos debe salvar.</li>
+</ul>
+<h2 id="124-recoleccion-de-factores-post-evaluar">#124 — Recolección de factores: <code>POST /evaluar</code></h2>
+<p>Autocontenido y reproducible: <strong>resetea → pinta el cortafuegos → enciende los
+focos → corre N ticks</strong> recolectando factores. Comparar dos caminos = dos
+llamadas con el mismo foco.</p>
+<pre><code class="language-jsonc">// request
+{ &quot;focos&quot;: [{&quot;x&quot;:799,&quot;z&quot;:696}],
+  &quot;firebreak_cells&quot;: [[x,z], ...],   // opcional; el camino a evaluar
+  &quot;ticks&quot;: 100,                      // 1..400
+  &quot;intensidad&quot;: 1.0 }
+// response (factores crudos)
+{ &quot;ticks&quot;: 100,
+  &quot;area_quemada&quot;: 1234,              // celdas que ardieron
+  &quot;protegidas_total&quot;: 50000,        // celdas de zona protegida en el mapa
+  &quot;protegidas_quemadas&quot;: 0,         // contención: 0 = perfecto
+  &quot;contenido&quot;: true,                // ¿el fuego NO llegó a zona protegida?
+  &quot;tick_primera_proteccion&quot;: null } // ticks hasta que entra (null = nunca)
+</code></pre>
+<p>Implementación: el endpoint cuenta el área quemada y las entradas en zona
+protegida a partir de los diffs que devuelve cada <code>motor.tick()</code>. La máscara de
+zona protegida (<code>evaluacion.protegidas()</code>) se cachea.</p>
+<p>Verificado: un anillo de cortafuegos alrededor del foco reduce el área quemada;
+determinista; validaciones de entrada.</p>
+<h2 id="metrica-compuesta-post-puntuar-redisenada-en-140">Métrica compuesta: <code>POST /puntuar</code> (rediseñada en #140)</h2>
+<p>La métrica se <strong>rediseñó a "mayor = mejor"</strong> (#140): un buen cortafuegos debe
+puntuar ALTO (más intuitivo). Combina 4 factores, cada uno en <strong>[0,1] con 1 =
+ideal</strong>, ponderados (los pesos suman 1; variarlos = análisis de sensibilidad):</p>
+<table>
+<thead>
+<tr>
+<th>factor</th>
+<th>valor [0,1] (1 = ideal)</th>
+<th>peso default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>eficacia</strong></td>
+<td>área SALVADA / baseline = (baseline − quemada)/baseline</td>
+<td>0.35</td>
+</tr>
+<tr>
+<td><strong>protección</strong></td>
+<td>fracción de zona valiosa salvada = 1 − quemadas/total</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td><strong>tiempo</strong></td>
+<td>1 si contenido; si no, cuánto TARDA el fuego en llegar (tick/ticks)</td>
+<td>0.15</td>
+</tr>
+<tr>
+<td><strong>coste-eficiencia</strong></td>
+<td>área salvada / coste del camino, normalizado suave por <code>EFICIENCIA_MEDIA</code></td>
+<td>0.25</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-jsonc">// request
+{ &quot;focos&quot;: [{&quot;x&quot;:799,&quot;z&quot;:696}],
+  &quot;firebreak_cells&quot;: [[x,z], ...],     // el camino a puntuar
+  &quot;ticks&quot;: 100,
+  &quot;pesos&quot;: {&quot;w_eficacia&quot;:0.5, &quot;w_proteccion&quot;:0.5, ...} }  // opcional; default arriba
+// response
+{ &quot;puntuacion&quot;: 0.78,                   // mayor = mejor, [0,1]
+  &quot;desglose&quot;: { &quot;eficacia&quot;: {&quot;valor&quot;:.., &quot;peso&quot;:..}, &quot;proteccion&quot;:{...}, ... },
+  &quot;factores_crudos&quot;: { area_quemada, area_baseline, area_salvada, coste_camino, ... } }
+</code></pre>
+<p>El endpoint corre una <strong>baseline sin cortafuegos</strong> (para medir el área salvada) y
+la corrida con el camino, calcula el coste del camino (<code>pathfinding.coste_camino</code>)
+y puntúa (<code>evaluacion.puntuar</code>, función pura testeable). Comparar dos caminos = dos
+llamadas; <strong>gana el de puntuación más alta</strong>, y el desglose explica por qué.</p>
+<blockquote>
+<p>La filosofía: premiar el <strong>beneficio</strong> (terreno y zona valiosa salvados, retraso
+del fuego) en relación al <strong>coste</strong> del camino, en vez de penalizar el daño. Un
+camino caro se justifica si salva mucho (factor coste-eficiencia).</p>
+</blockquote>
+<h2 id="flujo-en-3-fases-134-el-bueno">Flujo en 3 fases (#134) — el bueno</h2>
+<p><code>/puntuar</code> (batch) sigue existiendo para comparar dos caminos concretos, pero el
+flujo de uso real es en <strong>3 fases</strong>, y la evaluación es del <strong>incendio real</strong> que
+ocurre (no una re-simulación):</p>
+<ol>
+<li><strong>PINTAR</strong>: solo herramientas de cortafuegos (manual + auto).</li>
+<li><strong>QUEMA</strong>: la primera chispa (ignición de siempre) cierra el pintado y abre el
+   incendio; arranca un timer de 5 min.</li>
+<li><strong>EVALUACIÓN automática</strong>: 5 s sin celdas ardiendo (o el timer) → <code>POST
+   /resultado</code> → panel con puntuación + barra por factor + área vs baseline +
+   contenido sí/no. Reset (R) vuelve a PINTAR.</li>
+</ol>
+<p><strong>Backend de la sesión</strong> (<code>resultado.py</code>): la API acumula los factores en vivo —
+<code>/ignite</code> registra focos, <code>/firebreak</code> el cortafuegos, <code>/tick</code> acumula área/
+contención/tiempo (solo desde que arde). <code>/resultado</code> puntúa con esos factores +
+el coste del camino, corriendo solo una <strong>baseline sin cortafuegos</strong> (capada a
+200 ticks) para normalizar el área. Así el panel refleja exactamente la partida.</p>
+<p>Pesos fijos (equilibrado) por ahora; sliders de sensibilidad → posible extra.</p>
+<h2 id="estado-m4-completo">Estado: M4 completo</h2>
+<p>Flujo de punta a punta: <strong>trazar (M3) → pintar/terraformar (M2) → evaluar el
+fuego → puntuar y comparar caminos</strong>. El fuego es ya la función de evaluación del
+TFG, con métrica ponderada y desglose interpretable.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

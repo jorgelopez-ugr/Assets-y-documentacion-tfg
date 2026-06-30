@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Propagación de Fuego y Humo — Matemáticas Nvidia · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Referencias</p>
+    <h1>Propagación de Fuego y Humo — Matemáticas Nvidia</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<p>The 3D fire and smoke propagation logic is based on treating air as an <strong>incompressible</strong>, invisible fluid that transports particles and heat. According to the reference, the simulation is divided into solving the fluid motion (velocity) and subsequently using that velocity to advect smoke and fire.</p>
+<h3 id="1-the-momentum-equation">1. The Momentum Equation</h3>
+<p>To calculate the motion of the air driving the fire, the following equation is used:</p>
+<p>$$\frac{\partial u}{\partial t} + (u \cdot \nabla)u = -\frac{1}{\rho} \nabla p + f$$</p>
+<ul>
+<li><strong>$u$ (Velocity):</strong> A 3D vector indicating direction and speed of the air in each grid cell.</li>
+<li><strong>$t$ (Time):</strong> The time step between simulation frames.</li>
+<li><strong>$\nabla$ (Nabla):</strong> The operator measuring spatial changes (gradients or divergence).</li>
+<li><strong>$\rho$ (Mass Density):</strong> The fluid density (assumed constant in this simulation).</li>
+<li><strong>$p$ (Pressure):</strong> A scalar force that "pushes" the fluid from high-pressure to low-pressure zones to maintain incompressibility.</li>
+<li><strong>$f$ (External Forces):</strong> Includes gravity and, crucially, <strong>buoyancy</strong>.</li>
+</ul>
+<h3 id="2-smoke-specific-logic-buoyancy">2. Smoke-Specific Logic (Buoyancy)</h3>
+<p>Smoke rises due to thermal lift. To simulate this in C++, a vertical force ($f_{buoy}$) based on temperature must be applied:</p>
+<p>$$f_{buoy} = (A \cdot \text{Temperature} - B \cdot \text{Density}) \cdot z$$</p>
+<ul>
+<li><strong>$A$ and $B$:</strong> Tuning constants to adjust the lift intensity.</li>
+<li><strong>$z$:</strong> The upward unit vector ($0,0,1$ in 3D).</li>
+</ul>
+<h3 id="3-fire-specific-logic-reaction-coordinate">3. Fire-Specific Logic (Reaction Coordinate)</h3>
+<p>For fire, the article introduces the <strong>Reaction Coordinate</strong> ($Y$), which measures fuel life:</p>
+<p>$$\frac{\partial Y}{\partial t} + (u \cdot \nabla)Y = -k$$</p>
+<ul>
+<li><strong>$Y$:</strong> A value ranging from <strong>1</strong> (recent ignition) to <strong>0</strong> (depleted fuel).</li>
+<li><strong>$k$:</strong> A decay constant defining the rate of fire consumption.</li>
+<li><strong>$(u \cdot \nabla)Y$:</strong> Represents <strong>advection</strong>, describing how the velocity field ($u$) carries the fire through the environment.</li>
+</ul>
+<hr>
+<h3 id="recommendations-for-c-core-logic">Recommendations for C++ (Core Logic)</h3>
+<ul>
+<li><strong>Eulerian Discretization:</strong> Divide the 3D environment into a <strong>grid</strong> of cubic cells. Each cell is a structure storing velocity, pressure, density, temperature, and the reaction coordinate.</li>
+<li><strong>MacCormack Scheme:</strong> Avoid the simple semi-Lagrangian method to prevent "blurry" fire visuals. Implement the <strong>MacCormack scheme</strong> in C++, which performs forward and backward advection to correct errors and maintain sharp flames.</li>
+<li><strong>Jacobi Pressure Solver:</strong> Use the <strong>Jacobi iterative method</strong> to resolve pressure and ensure fluid incompressibility. In C++, this involves a loop updating each cell's value by averaging its six neighbors (Up, Down, Left, Right, Front, Back).</li>
+<li><strong>Memory Optimization:</strong> Use <strong>16-bit floating point</strong> for data storage in textures or arrays, but perform mathematical calculations in <strong>32-bit</strong> to prevent accumulated floating-point errors.</li>
+</ul>
+<hr>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

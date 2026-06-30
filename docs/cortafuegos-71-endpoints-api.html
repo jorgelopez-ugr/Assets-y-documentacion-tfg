@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortafuegos — `#71` — Endpoints `POST` y `DELETE /firebreak` · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Cortafuegos — `#71` — Endpoints `POST` y `DELETE /firebreak`</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="cortafuegos-69-comando-firebreak-batch.html">Cortafuegos — 69 — Comando FIREBREAK_BATCH</a> · <a href="cortafuegos-70-delete-y-restore-en-reset.html">Cortafuegos — 70 — DELETE y restore en reset</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Tercera pieza del milestone "Cortafuegos pintables desde Godot"</strong>:
+  expone por HTTP los dos comandos del motor introducidos en
+  <a href="cortafuegos-69-comando-firebreak-batch.html">#69</a> y
+  <a href="cortafuegos-70-delete-y-restore-en-reset.html">#70</a>.</li>
+<li><strong><code>POST /firebreak</code></strong>: pinta una lista de celdas con una intensidad
+  ∈ [0, 1]. Default 1.0. Respuesta <code>{status, painted: N}</code>.</li>
+<li><strong><code>DELETE /firebreak</code></strong>: deshace cortafuegos previos en una lista de
+  celdas. Respuesta <code>{status, undone: N}</code>.</li>
+<li><strong>Validación con pydantic</strong>: intensidad fuera de rango → 422; cells
+  malformado (no lista, pares de longitud incorrecta, no enteros) → 422.</li>
+<li><strong>No toca el motor</strong>: sólo capa HTTP. La API pública existente
+  (<code>/tick</code>, <code>/snapshot</code>, <code>/ignite</code>, <code>/reset</code>) no cambia su contrato.</li>
+<li><strong>Cero regresiones</strong>: 31 motor + 74 motor + <strong>61 API</strong> (era 46, +15).</li>
+</ul>
+<h2 id="por-que-esta-issue-es-la-siguiente">Por qué esta issue es la siguiente</h2>
+<p>El motor ya tenía las dos piezas de la mecánica (#69 + #70). Sin la API
+no hay forma de invocarlas desde fuera del proceso C++ — Godot habla con
+HTTP, no con stdin/stdout del motor. Esta issue es el puente.</p>
+<p>Una vez cerrada, Godot puede:
+1. Pintar con la brocha del ratón.
+2. Enviar <code>POST /firebreak {cells, intensidad}</code> por trazo.
+3. Enviar <code>DELETE /firebreak {cells}</code> para borrar (futuro: undo del
+   cliente o "borrar franja" como herramienta de pincel inverso).</p>
+<p>Falta sólo la validación narrativa end-to-end (<a href="cortafuegos-72-e2e-y-validacion-narrativa.html">#72</a>).</p>
+<h2 id="diseno">Diseño</h2>
+<h3 id="apimotorpy-wrappers-nuevos"><code>api/motor.py</code> — wrappers nuevos</h3>
+<pre><code class="language-python">def pintar_firebreak(cells: list[tuple[int, int]],
+                    intensidad: float = 1.0) -&gt; int:
+    p = _proceso_activo()
+    n = len(cells)
+    p.stdin.write(f&quot;FIREBREAK_BATCH {intensidad} {n}\n&quot;)
+    for x, z in cells:
+        p.stdin.write(f&quot;{x} {z}\n&quot;)
+    p.stdin.flush()
+    while True:
+        linea = p.stdout.readline().strip()
+        if linea.startswith(&quot;FIREBREAK_DONE&quot;):
+            return int(linea.split()[1])
+
+
+def deshacer_firebreak(cells: list[tuple[int, int]]) -&gt; int:
+    # Análogo con FIREBREAK_UNDO_BATCH / FIREBREAK_UNDO_DONE.
+</code></pre>
+<p>Patrón calcado del wrapper de <code>tick()</code>:
+1. Pedir el proceso activo (lo arranca lazy si hace falta).
+2. Escribir cabecera + N líneas en stdin.
+3. Leer stdout línea a línea hasta encontrar la respuesta esperada.
+4. Devolver el N reportado por el motor.</p>
+<h3 id="apimainpy-modelos-y-endpoints"><code>api/main.py</code> — modelos y endpoints</h3>
+<pre><code class="language-python">class FirebreakPayload(BaseModel):
+    cells: list[tuple[int, int]]
+    intensidad: float = Field(default=1.0, ge=0.0, le=1.0)
+
+class FirebreakUndoPayload(BaseModel):
+    cells: list[tuple[int, int]]
+
+
+@app.post(&quot;/firebreak&quot;)
+def firebreak(payload: FirebreakPayload):
+    n = motor.pintar_firebreak(payload.cells, payload.intensidad)
+    return {&quot;status&quot;: &quot;ok&quot;, &quot;painted&quot;: n}
+
+
+@app.delete(&quot;/firebreak&quot;)
+def firebreak_undo(payload: FirebreakUndoPayload = Body(...)):
+    n = motor.deshacer_firebreak(payload.cells)
+    return {&quot;status&quot;: &quot;ok&quot;, &quot;undone&quot;: n}
+</code></pre>
+<p><code>Body(...)</code> explícito en DELETE: FastAPI requiere indicar que el cuerpo
+JSON es obligatorio porque DELETE con body no es totalmente estándar
+(aunque está permitido por la RFC).</p>
+<h3 id="validacion-de-payload">Validación de payload</h3>
+<table>
+<thead>
+<tr>
+<th>Caso</th>
+<th>Status</th>
+<th>Comportamiento</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{cells: [[1,2], [3,4]], intensidad: 1.0}</code></td>
+<td>200</td>
+<td>OK</td>
+</tr>
+<tr>
+<td><code>{cells: [[1,2]]}</code></td>
+<td>200</td>
+<td>intensidad default = 1.0</td>
+</tr>
+<tr>
+<td><code>{cells: []}</code></td>
+<td>200</td>
+<td>lote vacío, painted=0</td>
+</tr>
+<tr>
+<td><code>{cells: [[1,2]], intensidad: 1.5}</code></td>
+<td>422</td>
+<td>fuera de rango</td>
+</tr>
+<tr>
+<td><code>{cells: [[1,2]], intensidad: -0.1}</code></td>
+<td>422</td>
+<td>fuera de rango</td>
+</tr>
+<tr>
+<td><code>{cells: "no-es-lista"}</code></td>
+<td>422</td>
+<td>tipo incorrecto</td>
+</tr>
+<tr>
+<td><code>{cells: [[1, 2, 3]]}</code></td>
+<td>422</td>
+<td>tupla de longitud != 2</td>
+</tr>
+<tr>
+<td><code>{cells: [["a", "b"]]}</code></td>
+<td>422</td>
+<td>no enteros</td>
+</tr>
+</tbody>
+</table>
+<p>Todo lo gestiona pydantic con <code>tuple[int, int]</code> + <code>Field(ge=0, le=1)</code>.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="apitest_motorpy-6-tests-nuevos-wrappers"><code>api/test_motor.py</code> — 6 tests nuevos (wrappers)</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_pintar_firebreak_devuelve_n_procesadas</code></td>
+<td>Caso normal, lote de 2.</td>
+</tr>
+<tr>
+<td><code>test_pintar_firebreak_lote_vacio</code></td>
+<td>N=0 funciona.</td>
+</tr>
+<tr>
+<td><code>test_pintar_firebreak_intensidad_default</code></td>
+<td>Sin arg → 1.0 implícita.</td>
+</tr>
+<tr>
+<td><code>test_deshacer_firebreak_devuelve_n_procesadas</code></td>
+<td>Pintar + undo de 2 celdas.</td>
+</tr>
+<tr>
+<td><code>test_deshacer_firebreak_celda_nunca_pintada_no_crashea</code></td>
+<td>Robustez del motor.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_pintada_no_arde_tras_tick</code></td>
+<td><strong>Validación funcional</strong>: pintar la celda contigua a la ignición y ver que tras un tick no aparece como BURNING.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="apitest_endpointspy-9-tests-nuevos-http"><code>api/test_endpoints.py</code> — 9 tests nuevos (HTTP)</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_firebreak_post_acepta_payload_completo</code></td>
+<td>Caso happy path.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_post_intensidad_default_es_1</code></td>
+<td>Default de pydantic.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_post_lote_vacio</code></td>
+<td><code>cells: []</code>.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_post_intensidad_fuera_de_rango_rechaza</code></td>
+<td>422 con &gt; 1.0 y &lt; 0.0.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_post_cells_malformado_rechaza</code></td>
+<td>422 con string, longitud incorrecta, tipos incorrectos.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_delete_devuelve_undone</code></td>
+<td>Pintar + DELETE.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_delete_celda_nunca_pintada_es_200</code></td>
+<td>DELETE robusto a no-op.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_paint_then_reset_tick_no_burning_en_pintada</code></td>
+<td>Pintar vecina del foco → no arde.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_reset_borra_efecto</code></td>
+<td><code>/reset</code> deshace cortafuegos sin DELETE explícito (gracias a #70).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="resultados">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#70)</th>
+<th style="text-align: right;">Después (#71)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">46 OK</td>
+<td style="text-align: right;"><strong>61 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">31 OK</td>
+<td style="text-align: right;">31 OK (sin tocar)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">74 OK</td>
+<td style="text-align: right;">74 OK (sin tocar)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>api/motor.py</code>:</li>
+<li>Nuevos wrappers <code>pintar_firebreak(cells, intensidad=1.0)</code> y
+    <code>deshacer_firebreak(cells)</code>.</li>
+<li>Docstring del módulo con los comandos del protocolo nuevos.</li>
+<li><code>api/main.py</code>:</li>
+<li>Modelos pydantic <code>FirebreakPayload</code> y <code>FirebreakUndoPayload</code>.</li>
+<li>Endpoint <code>POST /firebreak</code> y <code>DELETE /firebreak</code>.</li>
+<li>Importes de <code>Body</code> y <code>Field</code>.</li>
+<li><code>api/test_motor.py</code> — 6 tests nuevos (sección <code>firebreak (#71)</code>).</li>
+<li><code>api/test_endpoints.py</code> — 9 tests nuevos (sección <code>/firebreak (#71)</code>).</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong><code>tuple[int, int]</code> en lugar de <code>list[int]</code></strong>. Pydantic v2 lo
+   interpreta como "array de exactamente 2 enteros" en JSON, así que
+   <code>[1, 2]</code> pasa pero <code>[1, 2, 3]</code> se rechaza con 422 sin validación
+   custom. La alternativa habría sido <code>conlist(int, min_length=2,
+   max_length=2)</code> — más verboso y equivalente.</p>
+</li>
+<li>
+<p><strong>DELETE con cuerpo, no query string</strong>. La alternativa sería
+   <code>DELETE /firebreak?cells=...</code> pero pasar listas de cientos de pares
+   por query string es un dolor (URL-encoded, longitud máxima, parseo).
+   El cuerpo JSON es lo que ya envía el cliente Godot para POST y es
+   lo más natural para reusar el pipeline.</p>
+</li>
+<li>
+<p><strong>El wrapper devuelve <code>int</code>, no <code>bool</code></strong>. El motor reporta
+   <code>FIREBREAK_DONE N</code> con N celdas procesadas — útil para verificar
+   en tests que el motor recibió todo el lote. La API expone ese N en
+   el campo <code>painted</code>/<code>undone</code> de la respuesta, no como simple "ok".</p>
+</li>
+<li>
+<p><strong>Validación funcional ligera en este test</strong>, no exhaustiva. Pintar
+   la celda vecina al foco y comprobar que tras 1 tick no es BURNING
+   demuestra que el contrato funciona end-to-end. La validación
+   narrativa completa (franja estrecha vs ancha, demostración del TFG)
+   queda para <a href="cortafuegos-72-e2e-y-validacion-narrativa.html">#72</a>.</p>
+</li>
+<li>
+<p><strong><code>/reset</code> borra cortafuegos sin DELETE explícito</strong>. Es un efecto
+   secundario directo de #70 (reset() restaura miguitas), pero merece
+   un test en la API porque es comportamiento observable por Godot.
+   El test <code>test_firebreak_reset_borra_efecto</code> lo verifica.</p>
+</li>
+</ol>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="71-entrega-los-criterios-de-aceptacion-al-100">71 entrega los criterios de aceptación al 100 %:</h1>
+<ul>
+<li>[x] <code>pytest -q</code> pasa los 46 previos + 15 nuevos.</li>
+<li>[x] POST /firebreak con payload válido: 200, motor recibe.</li>
+<li>[x] POST con intensidad ausente: default 1.0.</li>
+<li>[x] POST con intensidad fuera de [0, 1]: 422.</li>
+<li>[x] POST con cells malformado: 422.</li>
+<li>[x] DELETE /firebreak con celdas pintadas: motor restaura.</li>
+<li>[x] DELETE con celdas nunca pintadas: 200 (no-op silencioso).</li>
+<li>[x] API pública existente sin cambios.</li>
+</ul>
+<p><strong>Siguiente</strong>: <a href="cortafuegos-72-e2e-y-validacion-narrativa.html">Cortafuegos — #72</a>
+(cuando exista). Construye encima de los tres componentes (motor POST,
+motor DELETE/reset, API HTTP) un test E2E completo y un bench narrativo
+que demuestre la hipótesis: "franja estrecha → el fuego salta; franja
+ancha → contiene".</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

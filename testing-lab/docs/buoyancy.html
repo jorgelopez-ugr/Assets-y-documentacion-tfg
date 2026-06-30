@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Buoyancy — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · operación 1 de 5</p>
+    <h1>Buoyancy (flotabilidad)</h1>
+    <p class="sub">El calor del gas se convierte en empuje vertical. Aislada, es
+      una operación <strong>O(n)</strong> y <strong>limitada por el ancho de banda
+      de memoria</strong>: barata, predecible, y el suelo contra el que compararemos
+      las operaciones caras.</p>
+  </header>
+
+  <!-- ════════════════════════════════ QUÉ HACE ════════════════════════════ -->
+  <h2>Qué hace la función</h2>
+  <p>La función real del motor es
+    <a href="../../engine/buoyancy.h"><code>aplicarBuoyancy</code></a>
+    (<code>engine/buoyancy.h</code>). Recorre el grid y, <em>solo</em> en las celdas
+    de gas (<code>BURNING</code> o <code>SMOKE</code>), añade una fuerza vertical
+    a la velocidad:</p>
+
+  <div class="eq">
+    velocity.z  +=  A · temperature  −  B · density
+    <small>A = 0.1 (empuje del calor) · B = 0.5 (peso del humo) · z = eje vertical</small>
+  </div>
+
+  <p>En el estado actual del motor <code>density</code> es un campo muerto
+    (vale 0 — lo confirmó la propia sonda de presión del lab, issue&nbsp;#136), así
+    que el término <code>B · density</code> no aporta nada y la operación se reduce
+    a una <strong>ley lineal</strong>: <code>velocity.z += A · temperature</code>.
+    Es la operación más sencilla del motor: por celda, una multiplicación, una
+    resta y una suma.</p>
+
+  <div class="nota">
+    <strong>Contexto del motor:</strong> la buoyancy solo actúa en <em>modo
+    volumétrico</em>. En el modo superficie (el que se evalúa por defecto) el aire
+    es inerte y esta fuerza no se aplica. Lo que aquí medimos es, por tanto, el
+    coste de la maquinaria volumétrica — útil como referencia técnica, no como
+    coste del producto evaluado.
+  </div>
+
+  <!-- ═══════════════════════════ GRÁFICO 1: FÍSICA ═════════════════════════ -->
+  <h2>Gráfico 1 — comportamiento físico</h2>
+  <p>La sonda <code>probe_buoyancy</code> mete un blob gaussiano de calor en un
+    cuadrante 50×50×20, marca como gas las celdas calientes, llama a
+    <code>aplicarBuoyancy</code> y vuelca un corte vertical (plano <var>x</var>–<var>z</var>
+    por el centro). El driver lo dibuja como dos mapas de calor: la temperatura de
+    entrada y la velocidad vertical de salida.</p>
+
+  <figure>
+    <img src="../out/buoyancy.png" alt="Mapas de calor: temperatura de entrada y velocidad vertical de salida">
+    <figcaption>
+      <b>Izquierda:</b> temperatura (entrada), un foco caliente que decae con la
+      altura. <b>Derecha:</b> <var>v<sub>z</sub></var> (salida), el empuje vertical
+      que produce la buoyancy. La salida es una copia escalada de la entrada
+      (factor A) recortada a las celdas de gas — el aire frío de alrededor queda a
+      cero.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    La flotabilidad <strong>transforma temperatura en empuje hacia arriba</strong>,
+    y lo hace <strong>linealmente</strong>: donde hay 800&nbsp;°C la salida es
+    exactamente 0.1·800 = 80&nbsp;m/s de <var>v<sub>z</sub></var>, y donde no hay
+    gas el empuje es cero. La forma de la pluma de velocidad calca la del calor.
+    Esto valida el test de cordura <code>tests/test_buoyancy.py</code>, que
+    comprueba <code>v<sub>z</sub> == A·temperature</code> celda a celda.
+  </div>
+
+  <!-- ═══════════════════════════ GRÁFICO 2: RENDIMIENTO ═══════════════════ -->
+  <h2>Gráfico 2 — rendimiento (curva de escalado O(n))</h2>
+  <p>El motor en producción está limitado por cuántos cuadrantes activos procesa
+    por tick. Pero la función aislada no tiene ese límite: desde la sonda le
+    metemos un <em>working set</em> creciente de cuadrantes (todas las celdas como
+    gas, carga máxima) y cronometramos en C++ con <code>std::chrono</code>,
+    autocalibrando las repeticiones para que cada medida sea estable.</p>
+
+  <figure>
+    <img src="../out/buoyancy_bench.png" alt="Curva de escalado O(n) y coste por celda de la buoyancy">
+    <figcaption>
+      <b>Izquierda (log-log):</b> tiempo por pasada frente al nº de celdas; los
+      puntos medidos siguen la recta ideal de pendiente&nbsp;1.
+      <b>Derecha:</b> coste por celda frente al tamaño del problema; el eje
+      superior traduce el nº de celdas a MB de <em>working set</em>. El salto cae
+      justo en el borde de la caché L3 (16&nbsp;MiB) del Ryzen&nbsp;7&nbsp;5800H.
+    </figcaption>
+  </figure>
+
+  <div class="cifras">
+    <div class="cifra"><div class="v">≈ 1.0</div><div class="k">pendiente log-log → O(n) lineal</div></div>
+    <div class="cifra"><div class="v">≈ 0.7 <span class="unidad">ns/celda</span></div><div class="k">en caché L3 (≈ 1.4 Gceldas/s)</div></div>
+    <div class="cifra"><div class="v">≈ 5 <span class="unidad">ns/celda</span></div><div class="k">en memoria (≈ 0.2 Gceldas/s)</div></div>
+    <div class="cifra"><div class="v">≈ 7×</div><div class="k">penalización al salir de la caché</div></div>
+  </div>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    <p style="margin-top:.2rem">Dos cosas:</p>
+    <ol style="margin:.2rem 0 .2rem 1.1rem">
+      <li><strong>Es O(n).</strong> El tiempo crece en proporción directa al nº de
+        celdas (pendiente medida ≈&nbsp;1 en log-log). No hay sorpresas
+        algorítmicas: doblar las celdas dobla el tiempo.</li>
+      <li><strong>El cuello de botella es la memoria, no el cálculo.</strong>
+        Mientras el working set cabe en la caché L3, el coste es de
+        ~0.7&nbsp;ns/celda; al superar los 16&nbsp;MiB se multiplica por ~7 hasta
+        ~5&nbsp;ns/celda y se queda plano. La aritmética (un multiplicar y dos
+        sumar) es gratis; lo que cuesta es traer cada <code>Celda</code> de la RAM.</li>
+    </ol>
+  </div>
+
+  <h3>Traducción a términos del motor</h3>
+  <p>Un cuadrante son 50×50×20 = 50&nbsp;000 celdas (1.8&nbsp;MB). Aplicando el
+    coste medido:</p>
+
+  <table>
+    <thead>
+      <tr><th>Régimen</th><th class="num">ns/celda</th><th class="num">por cuadrante</th><th class="num">cuadrantes / frame 60&nbsp;FPS</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Un cuadrante aislado (cabe en caché)</td><td class="num">≈ 0.7</td><td class="num">≈ 0.04 ms</td><td class="num">≈ 460</td></tr>
+      <tr><td>Muchos activos (memory-bound)</td><td class="num">≈ 5</td><td class="num">≈ 0.25 ms</td><td class="num">≈ 66</td></tr>
+    </tbody>
+  </table>
+
+  <p>Como un puñado de cuadrantes activos ya rebasa la L3, en una simulación
+    cargada el régimen real es el memory-bound: <strong>~0.25&nbsp;ms por
+    cuadrante</strong>. Aun así, ~66 cuadrantes por frame de 16.6&nbsp;ms con una
+    sola operación que, además, en la práctica trabaja solo sobre la fracción de
+    celdas que son gas (no el 100% del peor caso medido aquí). <strong>La buoyancy
+    nunca será el cuello de botella</strong> — ese sitio se lo lleva el solver de
+    presión, que mediremos después.</p>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code># 1) Compilar las sondas (incluye el benchmark)
+bash testing-lab/build.sh
+
+# 2) Gráfico de comportamiento físico  → out/buoyancy.png
+testing-lab/.venv/bin/python testing-lab/experiments/buoyancy.py
+
+# 3) Gráfico de rendimiento O(n)        → out/buoyancy_bench.png
+testing-lab/.venv/bin/python testing-lab/experiments/buoyancy_bench.py
+
+# 4) Test de cordura del invariante físico (vz == A·temp)
+testing-lab/.venv/bin/python testing-lab/tests/test_buoyancy.py</code></pre>
+
+  <footer class="pie">
+    Medidas tomadas en el hardware de referencia del TFG: AMD&nbsp;Ryzen&nbsp;7&nbsp;5800H
+    (L2 4&nbsp;MiB · L3 16&nbsp;MiB), un solo hilo, g++&nbsp;13 con <code>-O2</code>.
+    Los valores absolutos dependen de la máquina; la <em>forma</em> de las curvas
+    (O(n) + transición de caché) no. · <code>sizeof(Celda)</code> = 36&nbsp;B.
+  </footer>
+
+</div>
+</body>
+</html>

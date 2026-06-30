@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>La suite de tests — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  .capas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin: 1.6rem 0; }
+  .capa { background: var(--papel); border: 1px solid var(--linea); border-radius: 12px;
+          padding: 1.1rem 1.2rem; border-top: 3px solid var(--acento); }
+  .capa.lab { border-top-color: var(--ok); }
+  .capa.mot { border-top-color: var(--acento2); }
+  .capa h3 { margin: 0 0 .2rem; }
+  .capa .rol { color: var(--tinta-soft); font-size: .9rem; margin: .3rem 0 .6rem; }
+  .capa .n { font-family: var(--mono); font-size: 1.5rem; font-weight: 700; color: var(--titulo); }
+  .capa code { font-size: .78em; }
+  @media (max-width: 720px) { .capas { grid-template-columns: 1fr; } }
+  td.c { text-align: center; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · calidad · <a href="index.html">índice</a></p>
+    <h1>La suite de tests del proyecto</h1>
+    <p class="sub">Todo lo que se verifica, clasificado en <strong>tres
+      capas</strong>: el motor C++ (unidad + protocolo), la API en Python (unidad
+      + integración + end-to-end) y el testing-lab (la física aislada). Aquí están
+      todos, explicados y por dónde corren.</p>
+  </header>
+
+  <div class="capas">
+    <div class="capa mot">
+      <h3>Motor (C++)</h3>
+      <div class="rol">Carga de datos, bucle de simulación y protocolo del binario.</div>
+      <span class="n">4</span> runners <code>.sh</code><br>
+      <code>bash engine/test_*.sh</code>
+    </div>
+    <div class="capa">
+      <h3>API (Python)</h3>
+      <div class="rol">Lógica (DEM, A*, estado) + endpoints + end-to-end.</div>
+      <span class="n">125</span> tests pytest<br>
+      <code>cd api &amp;&amp; pytest</code>
+    </div>
+    <div class="capa lab">
+      <h3>testing-lab</h3>
+      <div class="rol">Un invariante físico por operación, sobre la sonda real.</div>
+      <span class="n">17</span> de cordura<br>
+      <code>.venv/bin/python tests/test_*.py</code>
+    </div>
+  </div>
+
+  <figure>
+    <img src="../out/tests_overview.png" alt="Barras del nº de tests por módulo, coloreadas por capa">
+    <figcaption>Reparto de la suite por módulo (recuento en vivo). La API concentra
+      el grueso (los <b>endpoints</b> con 44 y el <b>wrapper del motor</b> con 23);
+      el testing-lab aporta 17 chequeos de física y el motor 4 runners (cada uno con
+      varias comprobaciones internas).</figcaption>
+  </figure>
+
+  <div class="nota">
+    <strong>La pirámide.</strong> Muchos tests rápidos y baratos en la base (unidad
+    de C++ y Python), menos de integración (endpoints), y unos pocos end-to-end
+    (caros pero realistas). El testing-lab es una capa transversal: comprueba que
+    <em>la física</em> hace lo que debe — algo que los tests de API no pueden ver
+    porque no miran dentro del solver.
+  </div>
+
+  <!-- ═══════════════════════════ MOTOR ════════════════════════════════════ -->
+  <h2>1 · Motor C++ — <code>engine/</code></h2>
+  <p>Cada runner <code>.sh</code> compila con <code>g++</code> y ejecuta su prueba
+    contra el <code>world.dat</code> real (sin mocks). Dos son programas C++ con
+    <code>assert</code>; dos son tests funcionales del protocolo del binario.</p>
+  <table>
+    <thead><tr><th>Test</th><th>Qué verifica</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_world_loader.sh</code><br><span style="color:var(--tinta-soft)">+ .cpp</span></td>
+          <td>Carga de <code>data/world.dat</code>: dimensiones (1598×1393), nº y vecindad de cuadrantes, <code>y_superficie</code> y <code>fuel</code> por celda.</td></tr>
+      <tr><td><code>test_simulacion.sh</code><br><span style="color:var(--tinta-soft)">+ .cpp</span></td>
+          <td>El bucle de cuadrantes activos (<code>Simulacion::tick</code>): ignición, propagación del fuego y activación/desactivación de cuadrantes.</td></tr>
+      <tr><td><code>test_main.sh</code></td>
+          <td>El protocolo stdin/stdout del binario: <code>IGNITE/TICK/RESET</code>, formato de <code>CHANGED</code> (6 campos), <code>TICK_DONE&gt;0</code>, aparece <code>BURNING</code>, coordenadas en rango, y que <code>RESET</code> vacía el estado.</td></tr>
+      <tr><td><code>test_smoke_virtual.sh</code></td>
+          <td>(#92) Que las celdas de aire calientes se reporten como <code>SMOKE</code> "virtual" al cliente sin tocar el solver.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════ API ══════════════════════════════════════ -->
+  <h2>2 · API Python — <code>api/</code> (pytest)</h2>
+  <p>~125 funciones <code>test_</code> en tres niveles: unidad (lógica pura),
+    integración (endpoints con <code>TestClient</code>) y end-to-end.</p>
+
+  <h3>Unidad — lógica y wrappers</h3>
+  <table>
+    <thead><tr><th>Módulo</th><th class="c">tests</th><th>Qué cubre</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_dem.py</code></td><td class="c">6</td><td>El DEM: altura fina por celda desde el heightmap, forma y pendiente (m/m).</td></tr>
+      <tr><td><code>test_pathfinding.py</code></td><td class="c">8</td><td>El A* del trazado: función de coste, heurística admisible, camino y <code>CosteParams</code>.</td></tr>
+      <tr><td><code>test_state.py</code></td><td class="c">11</td><td>El acumulador de estado en memoria: reconstruir el snapshot a partir de los diffs <code>CHANGED</code>.</td></tr>
+      <tr><td><code>test_motor.py</code></td><td class="c">23</td><td>El wrapper del proceso C++ (<code>motor.py</code>): <code>ignite/tick</code> devuelven cambios, parseo del protocolo, reset. Usa el binario real.</td></tr>
+      <tr><td><code>test_logger.py</code></td><td class="c">4</td><td>El logging centralizado: <code>get_logger</code> válido, se crea <code>logs/api.log</code>.</td></tr>
+      <tr><td><code>test_headless_bench.py</code></td><td class="c">8</td><td>Helpers puros del banco: <code>escribir_csv</code> (cabecera fija, manejo de <code>None</code>, formato estable).</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Integración — endpoints FastAPI</h3>
+  <table>
+    <thead><tr><th>Módulo</th><th class="c">tests</th><th>Qué cubre</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_endpoints.py</code></td><td class="c">44</td><td>Todos los endpoints vía <code>TestClient</code>: <code>/reset, /ignite, /tick, /snapshot, /firebreak (+DELETE), /viento, /trazar, /stats, /fuel_map, /quadrants…</code> — contratos, formatos y casos límite.</td></tr>
+      <tr><td><code>test_evaluacion.py</code></td><td class="c">12</td><td>(#124) El endpoint <code>/evaluar</code>: recolección de los factores de la métrica compuesta de calidad del camino.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>End-to-end</h3>
+  <table>
+    <thead><tr><th>Módulo</th><th class="c">tests</th><th>Qué cubre</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_e2e.py</code></td><td class="c">9</td><td>(#43, criterio de cierre del rediseño) Que el fuego <strong>cruza la frontera entre cuadrantes</strong>: la cascada de activación tick a tick, de extremo a extremo.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════ TESTING-LAB ══════════════════════════════ -->
+  <h2>3 · testing-lab — <code>tests/</code></h2>
+  <p>Un script por experimento: corre la sonda real y comprueba <strong>un
+    invariante físico</strong> del CSV (devuelve 0 = OK, 1 = fallo). No miran
+    rendimiento ni protocolo: miran que la <em>física</em> sea correcta.</p>
+
+  <h3>Comportamiento de cada operación</h3>
+  <table>
+    <thead><tr><th>Test</th><th>Invariante</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_buoyancy.py</code></td><td>El empuje vertical es lineal en la temperatura: v<sub>z</sub> == A·temp.</td></tr>
+      <tr><td><code>test_viento.py</code></td><td>El viento empuja gases (no FUEL), no toca la vertical, y acumula con los ticks.</td></tr>
+      <tr><td><code>test_presion.py</code></td><td>El solver de Poisson converge: el residuo baja de forma monótona.</td></tr>
+      <tr><td><code>test_adveccion.py</code></td><td>El blob de calor se transporta con el flujo (desplazamiento esperado).</td></tr>
+      <tr><td><code>test_reaccion.py</code></td><td>Ignición por umbral, quemado (→SMOKE) y enfriamiento exponencial.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Rendimiento y pedagógicos</h3>
+  <table>
+    <thead><tr><th>Test</th><th>Invariante</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_buoyancy_bench.py</code></td><td>Escalado O(n): la pendiente log-log ≈ 1.</td></tr>
+      <tr><td><code>test_presion_proyeccion.py</code></td><td>La proyección reduce la divergencia.</td></tr>
+      <tr><td><code>test_presion_jacobi.py</code></td><td>Jacobi converge (residuo monótono).</td></tr>
+      <tr><td><code>test_adveccion_backtrace.py</code></td><td>El origen = posición − dt·v; el valor interpolado queda dentro de rango (sin overshoot).</td></tr>
+      <tr><td><code>test_adveccion_maccormack.py</code></td><td>El semi-lagrangiano difunde; MacCormack conserva mejor el pico.</td></tr>
+      <tr><td><code>test_demo_fluido.py</code></td><td>Con presión el calor se reparte mucho más lateralmente que sin ella.</td></tr>
+      <tr><td><code>test_viento_demo.py</code></td><td>El viento desplaza el penacho a sotavento.</td></tr>
+      <tr><td><code>test_reaccion_alcance.py</code></td><td>Más enfriamiento → menor alcance del calor (contención).</td></tr>
+      <tr><td><code>test_interpolacion.py</code></td><td>Interpolación sin overshoot, exacta en las esquinas, centro = media.</td></tr>
+      <tr><td><code>test_operadores.py</code></td><td>La derivada discreta ≈ la analítica; la divergencia de un campo expansivo es uniforme.</td></tr>
+      <tr><td><code>test_tick.py</code></td><td>Viento→horizontal, buoyancy→vertical, y el campo se transforma a lo largo de la tubería.</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Trazado</h3>
+  <table>
+    <thead><tr><th>Test</th><th>Invariante</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_astar.py</code></td><td>El A* "espejo" da el mismo camino que el real; el camino es contiguo de origen a meta; A* explora ≤ celdas que Dijkstra.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ════════════════════════════ CORRER ══════════════════════════════════ -->
+  <h2>Cómo correr cada capa</h2>
+  <pre><code># Motor (C++) — compila y ejecuta cada runner
+bash engine/test_main.sh
+bash engine/test_simulacion.sh
+bash engine/test_world_loader.sh
+bash engine/test_smoke_virtual.sh
+
+# API (Python) — toda la suite pytest
+cd api &amp;&amp; pytest            # o: python -m pytest -q
+
+# testing-lab — cada script de cordura (0 = OK, 1 = fallo)
+for t in testing-lab/tests/test_*.py; do testing-lab/.venv/bin/python "$t"; done</code></pre>
+
+  <footer class="pie">
+    Recuentos en vivo (<code>testing-lab/experiments/tests_overview.py</code>): el
+    número exacto puede variar al añadir tests. Filosofía: tests de unidad rápidos
+    en la base, integración en medio, end-to-end en la cima, y el testing-lab como
+    verificación transversal de la física.
+  </footer>
+
+</div>
+</body>
+</html>

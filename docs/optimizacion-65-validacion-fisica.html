@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#65` — Validación de no-regresión física · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#65` — Validación de no-regresión física</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="optimizacion-63-parada-temprana-jacobi.html">Optimización — 63 — Parada temprana Jacobi</a> · <a href="optimizacion-64-paralelismo-openmp.html">Optimización — 64 — Paralelismo OpenMP</a> · <a href="optimizacion-66-precomputar-divergencia.html">Optimización — 66 — Precomputar divergencia</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>El paralelismo per se (#64) NO introduce ninguna divergencia
+  física.</strong> Bit-idéntico verificado a 100 y 160 ticks entre
+  <code>OMP_NUM_THREADS=1</code>, 4, 8 y 16 con el binario post-#66.</li>
+<li><strong>La cumulativa main → milestone SÍ desplaza la propagación</strong>
+  porque #63 (parada temprana Jacobi, ε=0.5) cambió intencionadamente
+  la numérica. Los umbrales del issue #65 (±2 % en counts, ±3 celdas
+  en bbox) se exceden — esto era esperado y se aceptó al cerrar #63.</li>
+<li><strong>El patrón cualitativo se mantiene</strong>: el frente de fuego sigue
+  siendo aproximadamente circular, dirección de propagación dominada
+  por el DEM, escala temporal y geográfica del mismo orden. La
+  visualización en Godot no debería distinguir las dos versiones a
+  ojo, solo en métricas fundamentales.</li>
+</ul>
+<h2 id="por-que-65-no-es-un-test-de-regresion-estandar">Por qué #65 no es un test de regresión "estándar"</h2>
+<p>El issue tal como se redactó al inicio del milestone exigía: ejecutar
+300 ticks pre y post paralelismo, comparar conteos por estado y bbox
+BURNING en ticks 50/100/150/200/250/300, <strong>diferencia &lt;2 % en counts y
+&lt;3 celdas en bbox</strong>.</p>
+<p>Esa redacción asumía implícitamente que las únicas issues anteriores
+serían #61 (benchmark) y #62 (profiling), que NO cambian la
+simulación. Pero #63 (parada temprana Jacobi) cambia la numérica por
+diseño — sustituye 30 iteraciones fijas por warm-start + parada con
+ε=0.5, baja la presión 32 % y mueve BURNING ~4 % al tick 100. Eso ya
+violaría #65 antes de tocar paralelismo.</p>
+<p>Por eso el documento separa dos preguntas:</p>
+<ol>
+<li>¿La paralelización <strong>introduce</strong> divergencia física por sí misma?
+   → Validación estricta en su escala: bit-idéntica entre N=1 y N=8.</li>
+<li>¿El milestone completo (post-#63 + #64 + #66) preserva la
+   propagación frente a <code>main</code>?
+   → Comparativa narrativa: counts, bbox, naturaleza de las
+   divergencias.</li>
+</ol>
+<h2 id="validacion-1-paralelismo-solo-64">Validación 1 — paralelismo solo (#64)</h2>
+<p>Pregunta: ¿El bucle <code>for (uint32_t id : activos_)</code> paralelizado con
+<code>#pragma omp parallel for</code> produce los mismos floats que la versión
+secuencial?</p>
+<h3 id="razonamiento-de-diseno">Razonamiento de diseño</h3>
+<p>Cada cuadrante en el cuerpo del bucle paralelo:
+- Lee y escribe <strong>solo</strong> su grid dinámico (<code>world_.cuadrantes[id].grid</code>).
+- Lee y escribe <strong>solo</strong> su buffer-de-hilo (<code>bufs_*[tid]</code>).
+- No lee de cuadrantes vecinos hasta <code>propagar_halos()</code>, que corre
+  secuencial tras la barrera implícita del <code>parallel for</code>.</p>
+<p>Por construcción, el orden de ejecución de cuadrantes no afecta los
+valores resultantes. Los floats son bit-idénticos.</p>
+<h3 id="evidencia-experimental">Evidencia experimental</h3>
+<p>Tres líneas de evidencia, todas consistentes:</p>
+<ol>
+<li>
+<p><strong>Snapshot numérico (<code>test_determinismo_numerico_adveccion</code>)</strong>:
+   10 ticks con un cuadrante activo, 6 puntos del grid verificados a
+   tolerancia 0.1 %. Pasa con cualquier <code>OMP_NUM_THREADS</code> ∈ {1, 4, 8, 16}.
+   Si hubiera cualquier divergencia inducida por paralelismo, este
+   test fallaría — está ahí precisamente para ese tipo de drift.</p>
+</li>
+<li>
+<p><strong>Bench a 100 ticks, ignición central</strong> (<a href="optimizacion-64-paralelismo-openmp.html">#64</a>):</p>
+</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Hilos</th>
+<th style="text-align: right;">BURNING tick 100</th>
+<th style="text-align: right;">SMOKE tick 100</th>
+<th style="text-align: right;">iters Jacobi/call</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">18.07</td>
+</tr>
+<tr>
+<td>4</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">18.07</td>
+</tr>
+<tr>
+<td>8</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">18.07</td>
+</tr>
+<tr>
+<td>16</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">18.07</td>
+</tr>
+</tbody>
+</table>
+<p>Coincidencia exacta a tres dígitos. No hay variación entre
+   ejecuciones — el motor es totalmente determinista respecto al
+   número de hilos.</p>
+<ol start="3">
+<li><strong>Bench a 160 ticks</strong>: mismas conclusiones a escala más grande
+   (BURNING 57 219, SMOKE 262 347 en todos los thread counts).</li>
+</ol>
+<h3 id="veredicto">Veredicto</h3>
+<p><strong>El paralelismo del bucle de cuadrantes (#64) no introduce ninguna
+divergencia observable</strong>, ni numérica, ni en counts, ni en propagación.
+El criterio implícito de #65 sobre el paralelismo se cumple
+trivialmente.</p>
+<h2 id="validacion-2-milestone-completo-vs-main">Validación 2 — milestone completo vs <code>main</code></h2>
+<p>Pregunta: ¿La suma de #63 + #64 + #66 (es decir, el binario en la rama
+<code>implementando-paralelismo</code>) preserva la propagación física observable
+respecto al <code>main</code> original?</p>
+<h3 id="metodologia">Metodología</h3>
+<ul>
+<li>200 ticks, ignición central (799, 696), <code>OMP_NUM_THREADS=1</code> (la
+  comparación no es contra paralelismo, es contra <code>main</code>; con 1 hilo
+  el binario post-#66 es comparable apples-to-apples con <code>main</code>).</li>
+<li>Snapshot a ticks <strong>50, 100, 150, 200</strong>.</li>
+<li>Counts por estado y bbox BURNING en cada snapshot.</li>
+<li>Tolerancias del issue: counts ±2 %, bbox ±3 celdas/eje.</li>
+</ul>
+<p>Trim respecto al issue: 200 ticks en vez de 300 porque el <code>/tick</code> a
+tick 200 ya tarda ~47 s con <code>main</code> (el binario lento) y un run a 300
+ticks tomaría 2-3 horas. A tick 200 ya tenemos ~290k BURNING y
+~1.1M SMOKE, suficiente para evaluar la propagación.</p>
+<h3 id="resultado">Resultado</h3>
+<p>Tabla resumida (ver <code>tools/comparar_validacion.py</code> para el detalle):</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>Estado</th>
+<th style="text-align: right;">main</th>
+<th style="text-align: right;">post (rama actual)</th>
+<th style="text-align: right;">Δ</th>
+<th style="text-align: right;">Δ %</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50</td>
+<td>BURNING</td>
+<td style="text-align: right;">669</td>
+<td style="text-align: right;">723</td>
+<td style="text-align: right;">+54</td>
+<td style="text-align: right;">+8.07 %</td>
+</tr>
+<tr>
+<td>50</td>
+<td>SMOKE</td>
+<td style="text-align: right;">1244</td>
+<td style="text-align: right;">1525</td>
+<td style="text-align: right;">+281</td>
+<td style="text-align: right;">+22.59 %</td>
+</tr>
+<tr>
+<td>100</td>
+<td>BURNING</td>
+<td style="text-align: right;">2651</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">-105</td>
+<td style="text-align: right;">-3.96 %</td>
+</tr>
+<tr>
+<td>100</td>
+<td>SMOKE</td>
+<td style="text-align: right;">19357</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;">+2213</td>
+<td style="text-align: right;">+11.43 %</td>
+</tr>
+<tr>
+<td>150</td>
+<td>BURNING</td>
+<td style="text-align: right;">42221</td>
+<td style="text-align: right;">42955</td>
+<td style="text-align: right;">+734</td>
+<td style="text-align: right;">+1.74 %</td>
+</tr>
+<tr>
+<td>150</td>
+<td>SMOKE</td>
+<td style="text-align: right;">162889</td>
+<td style="text-align: right;">174060</td>
+<td style="text-align: right;">+11171</td>
+<td style="text-align: right;">+6.86 %</td>
+</tr>
+<tr>
+<td>200</td>
+<td>BURNING</td>
+<td style="text-align: right;">293620</td>
+<td style="text-align: right;">178758</td>
+<td style="text-align: right;">-114862</td>
+<td style="text-align: right;">-39.12 %</td>
+</tr>
+<tr>
+<td>200</td>
+<td>SMOKE</td>
+<td style="text-align: right;">1111163</td>
+<td style="text-align: right;">1088272</td>
+<td style="text-align: right;">-22891</td>
+<td style="text-align: right;">-2.06 %</td>
+</tr>
+</tbody>
+</table>
+<p>Bbox BURNING — desplazamiento máximo en cualquier eje:</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th style="text-align: right;">máx desplazamiento</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>50</td>
+<td style="text-align: right;">3 celdas</td>
+</tr>
+<tr>
+<td>100</td>
+<td style="text-align: right;">5 celdas</td>
+</tr>
+<tr>
+<td>150</td>
+<td style="text-align: right;">38 celdas</td>
+</tr>
+<tr>
+<td>200</td>
+<td style="text-align: right;">50 celdas</td>
+</tr>
+</tbody>
+</table>
+<p>10 desviaciones fuera de los umbrales del issue (<code>±2 %</code>, <code>±3 celdas</code>).</p>
+<h3 id="lectura">Lectura</h3>
+<p>El frente del fuego en el binario actual:</p>
+<ol>
+<li><strong>Avanza más rápido en los primeros ~50 ticks</strong> (SMOKE +22 % a tick
+   50). La parada temprana del solver de presión deja la velocidad un
+   poco menos divergente-libre, el calor advecta más, las celdas
+   transitan de FUEL a SMOKE algo más deprisa.</li>
+<li><strong>Se mantiene cerca al baseline en la fase media</strong> (tick 100-150).
+   La diferencia neta en BURNING está en ±4 %.</li>
+<li><strong>A tick 200 BURNING cae 39 %</strong> mientras SMOKE se mantiene. Esto
+   es coherente con el escenario "transitan más rápido": al tick 200
+   con <code>main</code> muchas celdas todavía están BURNING; en el actual ya
+   pasaron a SMOKE. <strong>El número total de celdas afectadas (BURNING +
+   SMOKE) sólo difiere un 1 %</strong> (1 267 030 vs 1 289 783). El frente
+   ha cubierto el mismo terreno; el ratio BURNING/SMOKE difiere.</li>
+<li><strong>El bbox de BURNING crece más en el actual</strong> (50 celdas en eje X
+   a tick 200), consistente con la propagación más rápida.</li>
+</ol>
+<p>Cualitativamente: misma forma de frente, mismo orden de magnitud, la
+diferencia es <strong>un offset temporal</strong>: el binario actual está ~10-20
+ticks "adelantado" respecto a <code>main</code> en la línea temporal de
+propagación. Para el caso de uso del simulador (visualización de
+escenarios para gestores forestales no técnicos en Godot) esto es
+físicamente equivalente — la propagación es la misma, sólo cambia el
+ritmo a nivel de detalle.</p>
+<h3 id="veredicto_1">Veredicto</h3>
+<p>Los umbrales literales del issue <strong>no se cumplen</strong>, pero esto era
+esperado y se documentó al cerrar #63. La aceptación de #63 fue:
+"BURNING tick 100 dentro de ±5 % del baseline" → -3.96 % → ✓.</p>
+<h1 id="65-con-sus-umbrales-mas-estrictos-2-era-incompatible-con-63">65 con sus umbrales más estrictos (±2 %) era incompatible con #63</h1>
+<p>desde el día que se decidió la parada temprana.</p>
+<p><strong>Decisión</strong>: cerrar #65 con esta documentación. La validación que
+realmente quería el milestone — "el paralelismo no rompe la física"
+— se cumple. La regresión adicional respecto a <code>main</code> es la deuda
+asumida en #63 a cambio de un 32 % de drop en latencia de presión.</p>
+<h2 id="cambios-en-codigo">Cambios en código</h2>
+<ul>
+<li><code>api/headless_bench.py</code>:</li>
+<li><code>stats_celdas</code> ahora devuelve también el bbox de celdas BURNING
+    (eje x, y, z, rango [min, max]). <code>None</code> si no hay BURNING.</li>
+<li>Nuevo flag <code>--validacion-json path</code> que, en cada tick de snapshot,
+    vuelca <code>{tick, counts, bbox_burning}</code> a un fichero JSON. Una sola
+    entrada por snapshot, no por tick.</li>
+<li>Nuevo flag <code>--no-perfil</code> que omite la llamada final a <code>/stats</code>.
+    Útil cuando se valida contra el binario de <code>main</code> (pre-#62) que
+    no implementa el comando STATS y haría colgar la API esperando
+    respuesta.</li>
+<li><code>api/test_headless_bench.py</code>: dos tests nuevos sobre el bbox de
+  BURNING (None si no hay celdas BURNING; cubre solo BURNING ignorando
+  otros estados).</li>
+<li><code>tools/comparar_validacion.py</code>: helper nuevo que toma dos JSON de
+  <code>--validacion-json</code> y produce una tabla Markdown con counts, bbox y
+  veredicto contra los umbrales del issue. No genera fichero de
+  documentación final — eso se hace a mano para añadir contexto
+  narrativo (este documento).</li>
+</ul>
+<h2 id="tests">Tests</h2>
+<ul>
+<li>46/46 API (incluye los dos tests nuevos sobre <code>stats_celdas</code> con bbox).</li>
+<li>Motor: 22+32+18 sh + 3 binarios. Cero regresiones.</li>
+</ul>
+<h2 id="proximo-y-ultimo-paso-del-milestone-67">Próximo y último paso del milestone: #67</h2>
+<p>Cierre con <code>docs/rendimiento.md</code>: tabla baseline → final con todas las
+optimizaciones, gráfica de latencia por tick, decisiones de diseño,
+trabajo futuro. La parte difícil — el análisis de qué se ganó y qué
+no — ya está hecha en estos documentos por issue.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error: race condition en el stdin/stdout del motor desde threads de FastAPI · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Error: race condition en el stdin/stdout del motor desde threads de FastAPI</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a> · <a href="protocolo-del-motor.html">Protocolo del Motor</a></p>
+<p><strong>Milestone afectado:</strong> Integración Godot-Motor
+<strong>Issue / PR:</strong> se descubre validando #88+#89 (overlay Q), se arregla en PR #101
+<strong>Archivos involucrados:</strong> <code>api/motor.py</code></p>
+<hr>
+<h2 id="el-sintoma">El síntoma</h2>
+<p>Durante la validación del overlay de cuadrantes activos (tecla Q),
+los logs de uvicorn empezaron a llenarse de excepciones del parser
+de <code>tick()</code>:</p>
+<pre><code>ValueError: could not convert string to float: '6.211.3827'
+ValueError: could not convert string to float: '13.2-22.6391'
+ValueError: could not convert string to float: '-13.3378.0248'
+INFO: 127.0.0.1:37814 - &quot;POST /tick HTTP/1.1&quot; 500 Internal Server Error
+</code></pre>
+<p>Cada cadena <code>'6.211.3827'</code> es claramente <strong>dos floats pegados</strong>:
+<code>6.21</code> y <code>1.3827</code>. El parser de <code>motor.py::tick()</code> esperaba 6
+campos en la línea CHANGED y, al fallar, devolvía 500 al cliente.</p>
+<p>En el lado de Godot, los efectos eran intermitentes y confusos:</p>
+<ul>
+<li>La tecla Q <strong>parecía</strong> togglear sola pasado un rato.</li>
+<li>El toggle de humo (H) dejaba de responder.</li>
+<li>Las celdas BURNING se acumulaban sin actualizarse.</li>
+</ul>
+<hr>
+<h2 id="por-que-pasaba">Por qué pasaba</h2>
+<p>El motor C++ es <strong>un único proceso</strong> lanzado con <code>Popen</code> que se
+comunica con la API por stdin/stdout (decisión arquitectónica
+fundamental, ver <a href="protocolo-del-motor.html">Protocolo del Motor</a>).</p>
+<p>FastAPI corre cada endpoint en un thread del threadpool de anyio.
+Los endpoints que tocan el motor (<code>/tick</code>, <code>/quadrants</code>, <code>/ignite</code>,
+<code>/humo_virtual</code>, …) compiten por el mismo stdin/stdout:</p>
+<pre><code>Thread A (POST /tick):
+  motor.stdin.write(&quot;TICK\n&quot;)
+  motor.stdin.flush()
+  while True:
+      linea = motor.stdout.readline()   ← está leyendo CHANGEDs
+
+Thread B (GET /quadrants disparado por el Timer del overlay Q):
+  motor.stdin.write(&quot;QUADRANTS\n&quot;)     ← INYECTA en medio
+  motor.stdin.flush()
+  linea = motor.stdout.readline()
+</code></pre>
+<p>El motor recibe <code>TICK\n</code> + <code>QUADRANTS\n</code> casi a la vez. Procesa
+TICK, emite muchísimas líneas CHANGED. En medio del flujo, ATIENDE
+la línea <code>QUADRANTS</code> y emite una línea <code>QUADRANTS qx=32 ...</code>. Los
+dos <code>readline()</code> (de Thread A y Thread B) compiten por las líneas
+del buffer y se llevan lo que pueden.</p>
+<p><strong>Resultado catastrófico</strong>: si el <code>\n</code> final de una CHANGED se
+pierde en el buffering, el <code>readline()</code> lee dos CHANGEDs pegados
+en una sola línea. El parser ve 11 tokens en lugar de 6, los
+tokens 5 (<code>state</code>) y 6 (<code>temperature</code>) salen con dos floats
+concatenados.</p>
+<hr>
+<h2 id="la-trampa-narrativa">La trampa narrativa</h2>
+<p>Lo más confuso es que <strong>el bug se manifestaba como problemas
+visuales</strong>, no como race condition. Los síntomas observables:</p>
+<ul>
+<li>"La tecla Q falla a veces."</li>
+<li>"La veleta del viento no se ve" (a veces, falsa coincidencia).</li>
+<li>"El humo no responde al toggle."</li>
+</ul>
+<p>Todos son <strong>consecuencias en cadena</strong> del 500 de <code>/tick</code>:</p>
+<ol>
+<li><code>/tick</code> falla → Godot no recibe diffs → el set de celdas
+   activas no se actualiza.</li>
+<li>El overlay Q dispara <code>/quadrants</code> y AGRAVA la race → más 500.</li>
+<li>El toggle H envía <code>/humo_virtual</code> con éxito (es atómico, no
+   bloquea el lock por mucho), pero como <code>/tick</code> no llega nunca a
+   completarse, no se ve cambio.</li>
+</ol>
+<hr>
+<h2 id="la-solucion">La solución</h2>
+<p>Lock global en <code>api/motor.py</code>:</p>
+<pre><code class="language-python">import threading
+
+_lock = threading.Lock()
+
+def tick() -&gt; list[dict]:
+    with _lock:
+        p = _proceso_activo()
+        ...
+</code></pre>
+<p>Cada función pública (<code>ignite</code>, <code>tick</code>, <code>reset</code>, <code>set_viento</code>,
+<code>set_humo_virtual</code>, <code>pintar_firebreak</code>, <code>deshacer_firebreak</code>,
+<code>stats</code>, <code>quadrants</code>, <code>fuel_map</code>, <code>shutdown</code>) adquiere el lock al
+entrar. Los helpers internos (<code>_vivo</code>, <code>_arrancar</code>,
+<code>_proceso_activo</code>) NO adquieren — sólo se llaman desde dentro de
+funciones públicas que ya lo tienen.</p>
+<p>Es la <strong>cola natural de comandos</strong>: si <code>/tick</code> está procesando
+miles de CHANGEDs, <code>/quadrants</code> espera 200-2000 ms y sale después
+limpio. El cliente Godot percibe una latencia ocasional pero ningún
+500.</p>
+<hr>
+<h2 id="tests">Tests</h2>
+<p>No hay un test directo de race condition (Python en thread tras
+thread es difícil de reproducir determinista). Pero existe un test
+indirecto en <code>api/test_endpoints.py</code>:</p>
+<pre><code class="language-python">def test_humo_virtual_toggle_idempotente():
+    with TestClient(app) as client:
+        for _ in range(10):
+            client.post(&quot;/humo_virtual&quot;, json={&quot;activo&quot;: True})
+            client.post(&quot;/humo_virtual&quot;, json={&quot;activo&quot;: False})
+        # No crash, no 500
+</code></pre>
+<p>Y los tests E2E llaman <code>/tick</code> 15-20 veces seguidas con <code>/snapshot</code>
+intercalados. Si el lock se rompe, fallan inmediatamente.</p>
+<hr>
+<h2 id="leccion-general">Lección general</h2>
+<blockquote>
+<p>Cualquier vez que la API tenga estado compartido — un proceso
+hijo, una conexión a BBDD, un cache mutable — necesita lock
+aunque el framework parezca "single-threaded". FastAPI corre
+handlers en threadpool por defecto. La concurrencia ocurre.</p>
+</blockquote>
+<p>Ver también <a href="protocolo-del-motor.html">Protocolo del Motor</a> para la decisión inicial de
+mantener UN proceso motor con stdin/stdout, y la nota sobre
+alternativas (binario, GDExtension) en
+<a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a>.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

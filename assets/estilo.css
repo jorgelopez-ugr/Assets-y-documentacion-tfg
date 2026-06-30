@@ -1,0 +1,239 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Hoja de estilos UNIFICADA del sitio de documentación del TFG.
+   Tres secciones (Documentación · Laboratorio · Galería) bajo un mismo tema
+   oscuro, técnico y de lectura larga. La base (variables, tipografía, figuras,
+   tablas, código) es la misma que usa el testing-lab, para que todo sea «acorde».
+   ───────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  --bg:        #0d1117;   /* fondo de página */
+  --papel:     #161b22;   /* tarjetas elevadas */
+  --papel-2:   #1c232c;   /* cabeceras de tabla / hover */
+  --linea:     #2a313b;
+  --tinta:     #d4dde8;   /* texto */
+  --tinta-soft:#93a1b1;
+  --titulo:    #eef3f9;
+  --acento:    #58b0ec;   /* azul */
+  --acento2:   #ff8585;   /* rojo */
+  --ok:        #57d39a;   /* verde */
+  --aviso:     #e6c45c;
+  --code-bg:   #0a0e14;
+  --code-fg:   #d4dde8;
+  --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--tinta);
+  font: 17px/1.72 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1000px; margin: 0 auto; padding: 3rem 1.6rem 7rem; }
+
+/* ── Barra de navegación superior (compartida por las 3 secciones) ───────── */
+.topnav {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center; gap: 1.2rem;
+  padding: .65rem clamp(1rem, 4vw, 2.2rem);
+  background: rgba(13, 17, 23, .86);
+  backdrop-filter: blur(9px);
+  border-bottom: 1px solid var(--linea);
+}
+.topnav .brand {
+  font-family: var(--mono); font-weight: 700; font-size: .9rem;
+  letter-spacing: .01em; color: var(--titulo); text-decoration: none; white-space: nowrap;
+}
+.topnav .brand b { color: var(--acento); font-weight: 700; }
+.topnav .links { display: flex; gap: .25rem; margin-left: auto; flex-wrap: wrap; }
+.topnav .links a {
+  color: var(--tinta-soft); text-decoration: none; font-size: .9rem;
+  padding: .35rem .8rem; border-radius: 7px; transition: background .15s, color .15s;
+}
+.topnav .links a:hover { color: var(--titulo); background: var(--papel-2); }
+.topnav .links a.active { color: var(--acento); background: rgba(88, 176, 236, .12); }
+
+/* ── Cabecera de página ──────────────────────────────────────────────────── */
+header.hero {
+  border-left: 4px solid var(--acento);
+  padding: .25rem 0 .25rem 1.4rem;
+  margin: 2.4rem 0 2.6rem;
+}
+header.hero .kicker {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: .14em;
+  font-size: .74rem; font-weight: 600; color: var(--acento); margin: 0 0 .5rem;
+}
+header.hero .kicker a { color: var(--acento); }
+header.hero h1 { font-size: 2.5rem; line-height: 1.12; margin: 0 0 .6rem; color: var(--titulo); letter-spacing: -.01em; }
+header.hero p.sub { color: var(--tinta-soft); font-size: 1.12rem; margin: 0; max-width: 46rem; }
+
+/* ── Tipografía de secciones ─────────────────────────────────────────────── */
+h2 {
+  font-size: 1.62rem; color: var(--titulo); margin: 3.2rem 0 1rem;
+  padding-bottom: .45rem; border-bottom: 1px solid var(--linea); letter-spacing: -.01em;
+}
+h3 { font-size: 1.18rem; color: var(--titulo); margin: 1.9rem 0 .6rem; }
+h4 { font-size: 1.02rem; color: var(--titulo); margin: 1.4rem 0 .4rem; }
+p  { margin: .85rem 0; }
+a  { color: var(--acento); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { color: var(--titulo); font-weight: 650; }
+em { color: #c6d2de; }
+ol, ul { margin: .85rem 0; padding-left: 1.4rem; }
+li { margin: .35rem 0; }
+hr { border: none; border-top: 1px solid var(--linea); margin: 2.2rem 0; }
+blockquote {
+  margin: 1.3rem 0; padding: .4rem 0 .4rem 1.2rem;
+  border-left: 3px solid var(--linea); color: var(--tinta-soft);
+}
+.unidad { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wikilink-missing { color: var(--tinta-soft); border-bottom: 1px dotted var(--linea); cursor: help; }
+
+/* ── Ecuación destacada ──────────────────────────────────────────────────── */
+.eq {
+  background: var(--papel); border: 1px solid var(--linea); border-left: 3px solid var(--acento);
+  border-radius: 10px; padding: 1.1rem 1.35rem;
+  font-family: "Cambria Math", Georgia, "Times New Roman", serif; font-size: 1.32rem;
+  text-align: center; color: var(--titulo);
+}
+.eq sub, .eq sup { font-size: .72em; }
+.eq small { display: block; font-size: .8rem; color: var(--tinta-soft); margin-top: .55rem;
+            font-family: var(--mono); letter-spacing: .01em; }
+
+/* ── Figuras ─────────────────────────────────────────────────────────────── */
+figure {
+  margin: 1.8rem 0; background: #f4f6f9; border: 1px solid var(--linea);
+  border-radius: 12px; padding: .9rem; box-shadow: 0 2px 10px rgba(0, 0, 0, .35);
+}
+figure img { width: 100%; height: auto; display: block; border-radius: 7px; }
+figcaption { margin-top: .85rem; padding: .75rem .35rem 0; font-size: .92rem; color: #45505e;
+             border-top: 1px dashed #cdd5de; }
+figcaption b { color: #1b2430; }
+
+/* ── Callouts (de los callouts de Obsidian) ──────────────────────────────── */
+.callout {
+  border: 1px solid var(--linea); border-left: 4px solid var(--tinta-soft);
+  border-radius: 10px; padding: .95rem 1.2rem; margin: 1.5rem 0;
+  background: rgba(147, 161, 177, .06);
+}
+.callout-title {
+  font-weight: 700; color: var(--titulo); margin-bottom: .3rem;
+  display: flex; align-items: center; gap: .5rem;
+}
+.callout-icon { font-size: 1.05em; }
+.callout-body > :first-child { margin-top: 0; }
+.callout-body > :last-child  { margin-bottom: 0; }
+.callout-info    { border-left-color: var(--acento);  background: rgba(88, 176, 236, .07); }
+.callout-info    .callout-title { color: var(--acento); }
+.callout-note    { border-left-color: var(--acento);  background: rgba(88, 176, 236, .06); }
+.callout-note    .callout-title { color: var(--acento); }
+.callout-warning { border-left-color: var(--aviso);   background: rgba(230, 196, 92, .07); }
+.callout-warning .callout-title { color: var(--aviso); }
+.callout-danger  { border-left-color: var(--acento2); background: rgba(255, 133, 133, .08); }
+.callout-danger  .callout-title { color: var(--acento2); }
+.callout-tip,
+.callout-success { border-left-color: var(--ok);      background: rgba(87, 211, 154, .07); }
+.callout-tip     .callout-title,
+.callout-success .callout-title { color: var(--ok); }
+
+/* ── Tarjetas de cifras clave ────────────────────────────────────────────── */
+.cifras { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; margin: 1.6rem 0; }
+.cifra { background: var(--papel); border: 1px solid var(--linea); border-top: 3px solid var(--acento2);
+         border-radius: 10px; padding: 1.05rem 1.15rem; }
+.cifra .v { font-size: 1.7rem; font-weight: 700; color: var(--titulo); font-variant-numeric: tabular-nums; }
+.cifra .k { font-size: .82rem; color: var(--tinta-soft); margin-top: .2rem; font-family: var(--mono); }
+
+/* ── Tablas ──────────────────────────────────────────────────────────────── */
+table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: .96rem;
+        background: var(--papel); border: 1px solid var(--linea); border-radius: 10px; overflow: hidden; }
+th, td { text-align: left; padding: .65rem .9rem; border-bottom: 1px solid var(--linea); }
+th { background: var(--papel-2); color: var(--titulo); font-family: var(--mono);
+     font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+tbody tr:last-child td { border-bottom: none; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── Código ──────────────────────────────────────────────────────────────── */
+code { background: #222b37; color: #e3ebf4; padding: .13em .42em; border-radius: 5px;
+       font-family: var(--mono); font-size: .88em; }
+pre { background: var(--code-bg); color: var(--code-fg); padding: 1.1rem 1.3rem; border-radius: 10px;
+      overflow-x: auto; border: 1px solid var(--linea); font-family: var(--mono); font-size: .9rem; line-height: 1.65; }
+pre code { background: none; color: inherit; padding: 0; }
+
+footer.pie {
+  margin-top: 4.5rem; padding-top: 1.3rem; border-top: 1px solid var(--linea);
+  color: var(--tinta-soft); font-size: .87rem;
+}
+footer.pie a { color: var(--acento); }
+
+/* ══ LANDING (index.html raíz) ═══════════════════════════════════════════ */
+.landing-hero { text-align: center; max-width: 56rem; margin: 3.5rem auto 1rem; }
+.landing-hero .kicker {
+  font-family: var(--mono); text-transform: uppercase; letter-spacing: .16em;
+  font-size: .78rem; color: var(--acento); margin: 0 0 1rem;
+}
+.landing-hero h1 { font-size: clamp(2.1rem, 5vw, 3.2rem); line-height: 1.1; margin: 0 0 1rem; color: var(--titulo); letter-spacing: -.015em; }
+.landing-hero p { color: var(--tinta-soft); font-size: 1.18rem; margin: 0 auto; max-width: 44rem; }
+.landing-hero .meta { margin-top: 1.4rem; font-family: var(--mono); font-size: .82rem; color: var(--tinta-soft); }
+.landing-hero .meta span { padding: 0 .55rem; }
+.landing-hero .meta span + span { border-left: 1px solid var(--linea); }
+
+.cards3 {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1.4rem; margin: 3rem 0 2rem;
+}
+.card-big {
+  display: flex; flex-direction: column; text-decoration: none; color: inherit;
+  background: var(--papel); border: 1px solid var(--linea); border-radius: 16px;
+  padding: 1.8rem 1.7rem; transition: border-color .16s, transform .16s, box-shadow .16s;
+}
+.card-big:hover { border-color: var(--acento); transform: translateY(-4px);
+                  box-shadow: 0 12px 32px rgba(0, 0, 0, .4); text-decoration: none; }
+.card-big .ico { font-size: 2rem; line-height: 1; margin-bottom: 1rem; }
+.card-big h2 { border: none; padding: 0; margin: 0 0 .5rem; font-size: 1.4rem; }
+.card-big p { margin: 0; color: var(--tinta-soft); font-size: .98rem; flex: 1; }
+.card-big .go { margin-top: 1.2rem; font-family: var(--mono); font-size: .82rem; font-weight: 700;
+                color: var(--acento); text-transform: uppercase; letter-spacing: .06em; }
+.card-big.lab   { border-top: 3px solid var(--ok); }
+.card-big.lab   .ico, .card-big.lab   .go { color: var(--ok); }
+.card-big.galeria { border-top: 3px solid var(--acento2); }
+.card-big.galeria .ico, .card-big.galeria .go { color: var(--acento2); }
+.card-big.docs  { border-top: 3px solid var(--acento); }
+
+/* ══ ÍNDICE DE DOCUMENTACIÓN (docs/index.html) ═══════════════════════════ */
+.doc-section { margin: 2.6rem 0; }
+.doc-section > p.lead { color: var(--tinta-soft); font-size: .95rem; margin: -.3rem 0 1rem; }
+.doc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: .9rem; }
+.doc-card {
+  display: block; text-decoration: none; color: inherit;
+  background: var(--papel); border: 1px solid var(--linea); border-radius: 11px;
+  padding: .9rem 1.1rem; transition: border-color .15s, transform .15s;
+}
+.doc-card:hover { border-color: var(--acento); transform: translateY(-2px); text-decoration: none; }
+.doc-card .t { font-weight: 650; color: var(--titulo); font-size: 1rem; line-height: 1.35; }
+.featured {
+  display: flex; align-items: center; gap: 1.1rem; text-decoration: none; color: inherit;
+  background: var(--papel); border: 1px solid var(--linea); border-left: 5px solid var(--acento);
+  border-radius: 12px; padding: 1.1rem 1.35rem; margin: 1.4rem 0;
+}
+.featured:hover { border-color: var(--acento); text-decoration: none; }
+.featured .ico { font-size: 1.6rem; color: var(--acento); }
+.featured .t { font-weight: 700; font-size: 1.12rem; color: var(--titulo); }
+.featured .d { color: var(--tinta-soft); font-size: .93rem; }
+.featured .arrow { margin-left: auto; color: var(--acento); font-weight: 700; font-size: 1.3rem; }
+
+/* ── Documento convertido: que las imágenes (si las hubiera) no desborden ── */
+article.doc img { max-width: 100%; height: auto; }
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 680px) {
+  .wrap { padding: 1.8rem 1.1rem 5rem; }
+  header.hero h1 { font-size: 1.9rem; }
+  .topnav { gap: .6rem; padding: .55rem .9rem; }
+  .topnav .brand { font-size: .8rem; }
+  .topnav .links a { padding: .3rem .55rem; font-size: .82rem; }
+  table { display: block; overflow-x: auto; }
+}

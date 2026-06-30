@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 3.5 — Design Changes · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 3.5 — Design Changes</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<h2 id="por-que-este-mvp-existe">Por qué este MVP existe</h2>
+<p>El sistema anterior asumía que el terreno puede cambiar entre sesiones. No es así.
+El DEM (heightmap) y la imagen hiperespectral son datos fijos, conocidos y nunca
+cambian. No tiene sentido que Godot calcule y envíe 100.000 celdas por la red
+cada vez que arranca. El estado inicial es determinista y debe precalcularse
+<strong>una sola vez</strong> offline.</p>
+<hr>
+<h2 id="arquitectura-objetivo">Arquitectura objetivo</h2>
+<pre><code>[OFFLINE — se ejecuta una vez, resultado versionado]
+heightmap_16bit.png
+        ↓
+tools/build_initial_state.py
+        ↓
+data/initial_state.json   ← fuente de verdad del sistema
+
+[RUNTIME]
+API arranca → carga data/initial_state.json automáticamente
+Godot → POST /ignite {&quot;x&quot;: N, &quot;z&quot;: N}  → enciende una celda
+Godot → POST /tick                      → avanza la simulación
+Godot → GET /active_cells               → recibe celdas activas
+Godot → POST /reset                     → vuelve al estado inicial
+</code></pre>
+<hr>
+<h2 id="issues-implementadas">Issues implementadas</h2>
+<h3 id="24-toolsbuild_initial_statepy"><code>#24</code> — <code>tools/build_initial_state.py</code></h3>
+<p>Script offline que sustituye a <code>terrain_to_json.py</code>.
+Genera <code>data/initial_state.json</code> con:
+- 100×100 celdas de superficie, cada una con <code>fuel_coefficient: 1.0</code>
+- Estado inicial <code>EMPTY</code> para todas las celdas
+- Bloque <code>params</code>: <code>k=2.0, dt=0.5, A=0.1, B=0.5, iter=5</code></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Outdated</div><div class="callout-body"></div></div>
+<p><strong>Tests:</strong> 10/10</p>
+<h3 id="25-motor-c-fuel_coefficient"><code>#25</code> — Motor C++: <code>fuel_coefficient</code></h3>
+<ul>
+<li><code>engine/celda.h</code> — nuevo campo <code>float fuel_coefficient = 1.0f</code></li>
+<li><code>engine/reaccion.h</code> — <code>reaction -= k * dt * fuel_coefficient</code></li>
+<li><code>engine/serializar.h</code> — lee y escribe <code>fuel_coefficient</code> (default 1.0 si falta)</li>
+</ul>
+<p>Con <code>fuel_coefficient = 0.0</code> una celda nunca arde — base para el futuro
+mapa hiperespectral de vegetación.</p>
+<p><strong>Tests:</strong> 8/8</p>
+<h3 id="26-api-arranque-automatico-y-nuevos-endpoints"><code>#26</code> — API: arranque automático y nuevos endpoints</h3>
+<ul>
+<li><code>lifespan</code> de FastAPI carga <code>data/initial_state.json</code> al arrancar</li>
+<li><code>POST /reset</code> — sin body, sin modelo Pydantic, recarga el fichero</li>
+<li><code>POST /ignite {"x": N, "z": N}</code> — enciende la celda de superficie de esa columna</li>
+<li><code>motor.configurar_params()</code> — relanza el proceso C++ si los params del fichero cambian</li>
+<li><code>state.cargar_desde_fichero()</code> — carga estado + construye índice de superficie para <code>/ignite</code></li>
+</ul>
+<p>Ver: <a href="arquitectura-api.html">Arquitectura API</a></p>
+<p><strong>Tests:</strong> 31/31</p>
+<h3 id="27-godot-adaptar-simulaciongd-pendiente-responsabilidad-del-usuario"><code>#27</code> — Godot: adaptar <code>simulacion.gd</code> <em>(pendiente — responsabilidad del usuario)</em></h3>
+<p>Eliminar <code>_cargar_terreno()</code> y la lógica de <code>POST /reset</code> con body.
+Añadir <code>POST /ignite</code> al hacer click en el terreno con raycast.
+Ver issue #27 en GitHub para los detalles técnicos.</p>
+<hr>
+<h2 id="criterio-de-cierre">Criterio de cierre</h2>
+<ol>
+<li><code>data/initial_state.json</code> versionado, con <code>fuel_coefficient</code> y bloque <code>params</code></li>
+<li>La API arranca sola — Godot no necesita hacer ninguna llamada inicial</li>
+<li><code>POST /reset</code> sin body restaura el estado inicial</li>
+<li><code>POST /ignite</code> enciende una celda correctamente</li>
+<li>El motor respeta <code>fuel_coefficient: 0.0</code></li>
+<li>Todos los tests pasan</li>
+</ol>
+<hr>
+<hr>
+<h2 id="segunda-iteracion-sistema-de-logging-y-debug-mode">Segunda iteración — Sistema de logging y debug mode</h2>
+<p>Añade observabilidad completa sin cambiar la lógica de simulación.</p>
+<h3 id="29-apiloggerpy-logs"><code>#29</code> — <code>api/logger.py</code> + <code>logs/</code></h3>
+<p>Módulo centralizado de logging con <code>RotatingFileHandler</code> (5 MB, 3 backups) y handler de consola opcional. Controlado por la variable de entorno <code>DEBUG_MODE=1</code>.</p>
+<p>Ver: <a href="sistema-de-logging.html">Sistema de Logging</a></p>
+<p><strong>Tests:</strong> 4/4</p>
+<h3 id="30-debug-mode-en-motor-c"><code>#30</code> — Debug mode en motor C++</h3>
+<p>Flag <code>--debug</code> en el motor: escribe stats por <code>stderr</code> tras cada tick (celdas BURNING/SMOKE, temperatura máxima, tick count). La API captura el <code>stderr</code> y lo escribe en <code>logs/engine.log</code>.</p>
+<p>Ver: <a href="sistema-de-logging.html">Sistema de Logging</a></p>
+<p><strong>Tests:</strong> 3/3</p>
+<h3 id="31-logsrotate_logspy"><code>#31</code> — <code>logs/rotate_logs.py</code></h3>
+<p>Script de rotación manual. Comprime los <code>.log</code> que superan los umbrales (1 MB o 7 días) como <code>.log.YYYY-MM-DD.gz</code>. Vacía el original sin eliminarlo para no romper los handlers activos.</p>
+<p>Ver: <a href="rotate-logs.html">rotate_logs</a></p>
+<p><strong>Tests:</strong> 6/6</p>
+<hr>
+<h2 id="lo-que-no-entro-en-este-mvp">Lo que NO entró en este MVP</h2>
+<ul>
+<li>Integración de la imagen hiperespectral (fuel_coefficient real por especie)</li>
+<li>Cámara libre tipo videojuego en Godot</li>
+<li>Optimización sparse del solver y advección</li>
+<li>Shaders de fuego</li>
+<li>Caminos forestales</li>
+</ul>
+<p>Ver próxima iteración: <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a></p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

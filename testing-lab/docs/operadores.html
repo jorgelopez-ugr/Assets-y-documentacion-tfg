@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operadores discretos — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · fundamento matemático · <a href="index.html">índice</a></p>
+    <h1>Operadores discretos — cálculo sin cálculo</h1>
+    <p class="sub">Derivadas, divergencias y laplacianos suenan a cálculo
+      avanzado, pero en una rejilla son <strong>sumas y restas de celdas
+      vecinas</strong>. Aquí se ve cómo, y por qué los tres son todo el solver de
+      <a href="presion.html">presión</a>.</p>
+  </header>
+
+  <h2>La idea</h2>
+  <p>En el papel, una derivada es un límite infinitesimal. En una rejilla no hay
+    "infinitamente cerca": lo más cerca que tienes es la celda de al lado. Así que
+    aproximamos cada operador del cálculo con <strong>diferencias entre
+    vecinos</strong>. Tres operadores, y con ellos se construye todo lo demás.</p>
+
+  <!-- ════════════════════════════ DERIVADA ════════════════════════════════ -->
+  <h2>1 · Derivada — la pendiente entre vecinos</h2>
+  <p>La derivada (cuánto cambia f al avanzar en x) se estima mirando el vecino de
+    la derecha menos el de la izquierda, repartido entre la distancia que los
+    separa (2 celdas):</p>
+  <div class="eq">
+    ∂f/∂x &nbsp;≈&nbsp; ( f(x+1) − f(x−1) ) / 2
+    <small>positiva donde f sube, negativa donde baja, cero en los picos y valles</small>
+  </div>
+
+  <figure>
+    <img src="../out/operadores.gif" alt="Un stencil de 3 celdas deslizando para calcular la derivada">
+    <figcaption>Un "stencil" de 3 celdas desliza por la función. En cada posición,
+      la derivada es <code>(f_der − f_izq)/2</code>; abajo, la curva de la derivada
+      se va rellenando. Donde f sube, la derivada es positiva; en la cima, cero.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    <strong>Derivar = restar vecinos.</strong> No hace falta cálculo simbólico: con
+    solo dos vecinos, la diferencia dividida por la distancia aproxima la pendiente
+    real con muy poco error (lo verás comparado con la derivada analítica en la
+    figura de abajo).
+  </div>
+
+  <!-- ════════════════════════════ DIVERGENCIA ═════════════════════════════ -->
+  <h2>2 · Divergencia — sumar las derivadas de cada eje</h2>
+  <p>La <a href="presion.html">divergencia</a> de un campo de velocidad es cuánto
+    fluido neto sale de una celda. Es, simplemente, la derivada de la velocidad en
+    cada eje, sumadas:</p>
+  <div class="eq">
+    ∇·v = (v<sub>x</sub><sup>der</sup> − v<sub>x</sub><sup>izq</sup>)
+        + (v<sub>y</sub><sup>arr</sup> − v<sub>y</sub><sup>abj</sup>)
+        + (v<sub>z</sub><sup>frt</sup> − v<sub>z</sub><sup>atr</sup>)
+    <small>la función real <code>calcularDivergencia</code> del motor es exactamente esto</small>
+  </div>
+
+  <!-- ════════════════════════════ LAPLACIANO ══════════════════════════════ -->
+  <h2>3 · Laplaciano — cuánto te separas del promedio de tus vecinos</h2>
+  <p>El laplaciano suma todos los vecinos y resta unas cuantas veces el valor de la
+    celda. Mide <strong>cuánto sobresale (o se hunde) una celda respecto al
+    promedio de su entorno</strong>:</p>
+  <div class="eq">
+    ∇²f = f<sub>der</sub> + f<sub>izq</sub> + f<sub>arr</sub> + f<sub>abj</sub> +
+          f<sub>frt</sub> + f<sub>atr</sub> − 6·f
+    <small>negativo en una cima (está por encima de su entorno), positivo en un valle</small>
+  </div>
+
+  <figure>
+    <img src="../out/operadores.png" alt="Derivada, laplaciano 1D y divergencia 2D de un campo expansivo">
+    <figcaption>
+      <b>Arriba izquierda:</b> la derivada discreta (puntos) clava la analítica
+      (línea): + donde f sube, − donde baja, 0 en la cima. <b>Arriba derecha:</b>
+      el laplaciano se hunde en la cima (sobresale del entorno) y sube en los
+      flancos. <b>Abajo:</b> un campo que se expande, y su divergencia — positiva y
+      uniforme en todo el interior, porque cada celda "expulsa" fluido.
+    </figcaption>
+  </figure>
+
+  <!-- ════════════════════════════ CONEXIÓN ════════════════════════════════ -->
+  <h2>Cómo encajan: estos tres SON el solver de presión</h2>
+  <p>El <a href="presion.html">solver de presión</a> resuelve ∇²p = div: encontrar
+    la presión cuyo laplaciano iguale la divergencia. Despejando p de la fórmula del
+    laplaciano se obtiene, casi mágicamente, la iteración de Jacobi:</p>
+  <div class="eq">
+    de &nbsp; ∇²p = div &nbsp; → &nbsp;
+    p = ( vecinos − div ) / 6
+    <small>cada celda se vuelve el promedio de sus vecinos, ajustado por la divergencia</small>
+  </div>
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    Los tres operadores no son piezas sueltas: <strong>la divergencia mide el
+    problema, el laplaciano define la ecuación, y resolverla (Jacobi) es repetir un
+    promedio de vecinos</strong>. Todo el solver es aritmética de celdas adyacentes
+    — exactamente lo que viste propagarse en
+    <a href="presion.html#jacobi">la página de presión</a>.
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/operadores.py   # derivada (GIF) + laplaciano + divergencia
+testing-lab/.venv/bin/python testing-lab/tests/test_operadores.py</code></pre>
+
+  <footer class="pie">
+    Función real del motor: <code>calcularDivergencia</code>
+    (<code>engine/presion.h</code>). La derivada y el laplaciano 1D son la misma
+    aritmética de diferencias que el solver aplica en 3D. → Lleva todo esto a
+    <a href="presion.html">la presión</a>.
+  </footer>
+
+</div>
+</body>
+</html>

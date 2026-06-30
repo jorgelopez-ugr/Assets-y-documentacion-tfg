@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arquitectura de la API · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · API (FastAPI)</p>
+    <h1>Arquitectura de la API</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="protocolo-del-motor.html">Protocolo del Motor</a></p>
+<h2 id="responsabilidad">Responsabilidad</h2>
+<p>La API es un <strong>puente y orquestador</strong>, sin lógica de física. Sus
+responsabilidades:</p>
+<ol>
+<li>Mantener vivo el proceso C++ del motor (lazy spawn) y traducir HTTP ↔ comandos
+   de texto.</li>
+<li>Servir los <strong>diffs</strong> de cada tick a Godot (protocolo basado en cambios).</li>
+<li>Orquestar el flujo del producto: cortafuegos (<code>/firebreak</code>), trazado A*
+   (<code>/trazar</code>) y evaluación (<code>/evaluar</code>, <code>/puntuar</code>, <code>/resultado</code>).</li>
+</ol>
+<blockquote>
+<p>El <strong>pathfinding (A*) y la evaluación viven en Python</strong> (no son física); el
+motor C++ no sabe de red ni de caminos. Ver <span class="wikilink-missing" title="nota no publicada: Trazado automático A — coste y
+datos (M3)">Trazado automático A — coste y
+datos (M3)</span> y <a href="evaluacion-de-caminos-m4.html">Evaluación de caminos (M4)</a>.</p>
+</blockquote>
+<hr>
+<h2 id="modulos">Módulos</h2>
+<ul>
+<li><strong><code>motor.py</code></strong> — wrapper del proceso C++ (lazy <code>Popen</code>, un <code>_lock</code> serializa el
+  acceso). Expone: <code>ignite</code>, <code>tick</code>→diffs, <code>reset</code>, <code>set_physics_mode</code>/
+  <code>get_physics_mode</code>, <code>pintar_firebreak</code>/<code>deshacer_firebreak</code>, <code>set_viento</code>,
+  <code>set_humo_virtual</code>, <code>quadrants</code>, <code>stats</code>, <code>fuel_map</code>, <code>shutdown</code>.</li>
+<li><strong><code>state.py</code></strong> — acumulador en memoria de celdas renderables. <code>update_from_changed</code>
+  aplica los <code>CHANGED</code> y <strong>devuelve los diffs renderables</strong> (transiciones
+  BURNING/SMOKE; los cambios de solo-temperatura se filtran). <code>active_cells()</code> para
+  el <code>/snapshot</code>. <code>clear()</code>.</li>
+<li><strong><code>dem.py</code></strong> — elevación/pendiente fina por celda (lee el heightmap).</li>
+<li><strong><code>pathfinding.py</code></strong> — A* sobre el DEM + coste por celda (<code>CosteParams</code>).</li>
+<li><strong><code>evaluacion.py</code></strong> — zona protegida + métrica compuesta <code>puntuar()</code>.</li>
+<li><strong><code>resultado.py</code></strong> — sesión de evaluación en vivo (acumula factores por tick).</li>
+<li><strong><code>main.py</code></strong> — los endpoints HTTP. <code>lifespan</code> no carga estado (world.dat lo
+  gestiona el motor); solo cierra el proceso al apagar.</li>
+</ul>
+<hr>
+<h2 id="endpoints">Endpoints</h2>
+<h3 id="simulacion">Simulación</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /reset</code> <code>{physics_mode?}</code></td>
+<td>Limpia el estado dinámico; opcional conmutar surface/volumetric. Devuelve el modo activo.</td>
+</tr>
+<tr>
+<td><code>POST /ignite</code> <code>{x,z}</code></td>
+<td>Enciende la celda de superficie en (x,z) metros.</td>
+</tr>
+<tr>
+<td><code>POST /tick</code></td>
+<td>Avanza un tick. Devuelve <strong><code>{"changed": [diffs]}</code></strong> (solo celdas que cambiaron a/desde BURNING/SMOKE).</td>
+</tr>
+<tr>
+<td><code>GET /snapshot</code></td>
+<td>Foto completa de celdas BURNING/SMOKE (sync inicial de un cliente nuevo).</td>
+</tr>
+<tr>
+<td><code>GET /status</code></td>
+<td>Modo de física activo (<code>{"physics_mode": ...}</code>).</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>Protocolo de diffs</strong> (MVP7): <code>/tick</code> devuelve los cambios del último tick, no
+el estado completo. <code>/snapshot</code> solo se usa para sincronizar al conectar. (Antes
+existía un <code>GET /active_cells</code> que se sondeaba cada frame; quedó obsoleto.)</p>
+</blockquote>
+<h3 id="cortafuegos-y-trazado">Cortafuegos y trazado</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /firebreak</code> <code>{cells, intensidad}</code></td>
+<td>Pinta cortafuegos (anula fuel, terraforma, estado CORTAFUEGOS). → <code>{painted}</code></td>
+</tr>
+<tr>
+<td><code>DELETE /firebreak</code> <code>{cells}</code></td>
+<td>Deshace cortafuegos. → <code>{undone}</code></td>
+</tr>
+<tr>
+<td><code>POST /trazar</code> <code>{origen, destino, pesos?}</code></td>
+<td>A* entre 2 puntos → vector de celdas (el cliente lo envía a <code>/firebreak</code>).</td>
+</tr>
+<tr>
+<td><code>GET /trazar/defaults</code></td>
+<td>Pesos default del A* (<code>CosteParams</code>); el HUD los pide al arrancar para inicializar sus sliders (M8).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="evaluacion-el-fuego-como-metrica">Evaluación (el fuego como métrica)</h3>
+<table>
+<thead>
+<tr>
+<th>Endpoint</th>
+<th>Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /evaluar</code> <code>{focos, firebreak_cells?, ticks}</code></td>
+<td>Simula y recolecta factores (área, contención, tiempo).</td>
+</tr>
+<tr>
+<td><code>POST /puntuar</code> <code>{focos, firebreak_cells, ticks, pesos?}</code></td>
+<td>Métrica compuesta ponderada (batch) → puntuación + desglose.</td>
+</tr>
+<tr>
+<td><code>POST /resultado</code> <code>{pesos?}</code></td>
+<td>Puntúa el incendio REAL de la sesión (factores acumulados en vivo).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="otros">Otros</h3>
+<p><code>POST /viento</code> <code>{vx,vz}</code> · <code>POST /humo_virtual</code> <code>{activo}</code> · <code>GET /fuel_map</code> ·
+<code>GET /quadrants</code> · <code>GET /stats</code> · <code>GET /</code> (health).</p>
+<hr>
+<h2 id="flujo-tipico-3-fases-desde-godot">Flujo típico (3 fases) desde Godot</h2>
+<pre><code>[arranque]  (motor aún no lanzado)
+1. PINTAR   POST /firebreak  (manual)  o  POST /trazar → POST /firebreak (auto)
+2. QUEMA    POST /ignite     ← motor se lanza aquí, carga world.dat
+            bucle:  POST /tick  → {changed:[...]}  (Godot pinta los diffs)
+3. EVALUAR  (5 s sin fuego o 5 min)  POST /resultado → puntuación + desglose
+[reset]     POST /reset
+</code></pre>
+<p><code>conftest.py</code> compila el motor si hace falta y aísla el estado entre tests
+(<code>motor.shutdown()</code> + <code>state.clear()</code> + <code>resultado.reset_sesion()</code>).</p>
+<hr>
+<h2 id="tests">Tests</h2>
+<p>Suite verde (~123 tests) con <code>cd api &amp;&amp; .venv/bin/python -m pytest -q
+--ignore=test_headless_bench.py</code>: <code>test_motor</code>, <code>test_state</code>, <code>test_endpoints</code>,
+<code>test_logger</code>, <code>test_e2e</code>, <code>test_dem</code>, <code>test_pathfinding</code>, <code>test_evaluacion</code>.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 0 — Motor C++ Base · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 0 — Motor C++ Base</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<h2 id="objetivo">Objetivo</h2>
+<p>Construir el núcleo de simulación de fuego: un programa C++ que recibe el estado
+de un grid 3D en JSON, procesa un tick de simulación física volumétrica y devuelve
+el siguiente estado en JSON.</p>
+<hr>
+<h2 id="que-se-construyo">Qué se construyó</h2>
+<h3 id="estructura-de-datos">Estructura de datos</h3>
+<ul>
+<li><strong><code>Vec3</code></strong> — vector 3D de floats (x, y, z) para velocidades y fuerzas</li>
+<li><strong><code>Celda</code></strong> — unidad mínima de simulación: velocidad, presión, densidad,
+  temperatura, coordenada de reacción y estado (<code>EMPTY</code>, <code>BURNING</code>, <code>SMOKE</code>)</li>
+<li><strong><code>Grid</code></strong> — contenedor 3D plano de celdas con acceso por coordenadas y
+  validación de límites</li>
+</ul>
+<p>Ver detalle: <a href="cuadrante-y-celda.html">Cuadrante y Celda</a></p>
+<h3 id="sistemas-fisicos-en-orden-de-ejecucion-por-tick">Sistemas físicos — en orden de ejecución por tick</h3>
+<ol>
+<li><strong>Buoyancy</strong> (<code>buoyancy.h</code>) — las celdas calientes suben, las densas bajan.
+   <code>f = (A·temp - B·density)·z</code></li>
+<li><strong>Presión</strong> (<code>presion.h</code>) — solver de Jacobi para flujo incompresible.
+   Calcula divergencia, itera la ecuación de Poisson y corrige velocidades.</li>
+<li><strong>Advección</strong> (<code>adveccion.h</code>) — esquema MacCormack de 3 fases: forward,
+   backward y corrección. Transporta temperatura, densidad y reacción.</li>
+<li><strong>Reacción</strong> (<code>reaccion.h</code>) — consume combustible: <code>reaction -= k·dt</code>.
+   Cuando <code>reaction ≤ 0</code>, la celda pasa de <code>BURNING</code> a <code>SMOKE</code>.</li>
+</ol>
+<p>Ver detalle: <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h3 id="serializacion">Serialización</h3>
+<p><strong><code>serializar.h</code></strong> — Grid ↔ JSON con nlohmann/json. Representación sparse:
+solo se incluyen celdas no-EMPTY, lo que reduce significativamente el payload.</p>
+<p>Ver detalle: <a href="protocolo-del-motor.html">Protocolo del Motor</a></p>
+<h3 id="punto-de-entrada">Punto de entrada</h3>
+<p><strong><code>main.cpp</code></strong> — lee JSON de stdin, ejecuta un tick, escribe JSON a stdout.
+Acepta parámetros CLI: <code>--k</code>, <code>--dt</code>, <code>--A</code>, <code>--B</code>, <code>--iter</code>.</p>
+<hr>
+<h2 id="issues-cerradas">Issues cerradas</h2>
+<p><code>#1</code> Struct Celda · <code>#2</code> Clase Grid · <code>#3</code> Advección MacCormack ·
+<code>#4</code> Solver Jacobi · <code>#5</code> Buoyancy · <code>#6</code> Coordenada de reacción ·
+<code>#7</code> Serialización JSON · <code>#8</code> Bucle principal (main.cpp)</p>
+<hr>
+<h2 id="estado-al-cerrar-el-mvp">Estado al cerrar el MVP</h2>
+<p>El motor funciona como una caja negra independiente:</p>
+<pre><code class="language-bash">echo '&lt;json&gt;' | ./motor   # → siguiente estado en JSON
+</code></pre>
+<p>No sabe nada de red, de Godot ni de la API. Listo para ser envuelto por la capa Python.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

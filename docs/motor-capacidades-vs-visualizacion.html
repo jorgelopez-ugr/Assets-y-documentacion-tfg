@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motor — Capacidades vs Visualización · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Motor — Capacidades vs Visualización</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<blockquote>
+<p>Hoja de ruta del milestone <strong>"Integración Godot-Motor: cerrar la brecha visual"</strong>.
+Inventario de qué calcula el motor C++, qué expone la API HTTP y qué muestra
+la escena Godot 4.6.</p>
+<p><strong>Rama de trabajo</strong>: <code>ajustando-godot-motor</code>
+<strong>Apertura</strong>: 2026-05-22
+<strong>Cierre del recorrido principal</strong>: 2026-05-28
+<strong>Recopilatorio</strong>: <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a></p>
+</blockquote>
+<hr>
+<h2 id="resumen-ejecutivo-estado-al-cierre-del-milestone">Resumen ejecutivo — estado al CIERRE del milestone</h2>
+<table>
+<thead>
+<tr>
+<th>Capacidad</th>
+<th style="text-align: center;">Motor</th>
+<th style="text-align: center;">API</th>
+<th style="text-align: center;">Godot</th>
+<th>Issue</th>
+<th>Estado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Estado BURNING</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ GPUParticles emisivo</td>
+<td>#79, #96</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Estado SMOKE en superficie</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ MultiMesh gris semitrans</td>
+<td>#79</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>"Ceniza" permanente</td>
+<td style="text-align: center;">(no existe estado BURNED)</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">✅ splat RG8 canal G</td>
+<td>#79 (cierra #91)</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Estado FUEL — mapa de combustibilidad</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ <code>GET /fuel_map</code></td>
+<td style="text-align: center;">✅ tinte verde en shader</td>
+<td>#81, #82</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Temperatura por celda</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">⚠️ filtro 10°C</td>
+<td style="text-align: center;">❌ no usada</td>
+<td>#86, #87</td>
+<td>⏳</td>
+</tr>
+<tr>
+<td>Campo de velocidad por celda</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td>—</td>
+<td>trabajo futuro</td>
+</tr>
+<tr>
+<td>Densidad por celda</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td>—</td>
+<td>trabajo futuro</td>
+</tr>
+<tr>
+<td>Reacción Y ∈ [0, 1]</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td>#84, #85</td>
+<td>⏳</td>
+</tr>
+<tr>
+<td><strong>SMOKE virtual (AIR caliente)</strong></td>
+<td style="text-align: center;">✅ <code>estado_aparente()</code></td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ MultiMesh humo + tecla H</td>
+<td>#92</td>
+<td>✅</td>
+</tr>
+<tr>
+<td><strong>Toggle del usuario</strong></td>
+<td style="text-align: center;">✅ <code>SMOKE_VIRTUAL on/off</code></td>
+<td style="text-align: center;">✅ <code>POST /humo_virtual</code></td>
+<td style="text-align: center;">✅ tecla H + botón HUD</td>
+<td>#94</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Presión</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">❌</td>
+<td style="text-align: center;">❌</td>
+<td>—</td>
+<td>no-op</td>
+</tr>
+<tr>
+<td>Cuadrantes activos</td>
+<td style="text-align: center;">✅ <code>QUADRANTS</code></td>
+<td style="text-align: center;">✅ <code>GET /quadrants</code></td>
+<td style="text-align: center;">✅ overlay tecla Q</td>
+<td>#88, #89</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Viento global (vector)</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ entrada</td>
+<td style="text-align: center;">✅ veleta 3D widget HUD</td>
+<td>#80</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Cortafuegos intensidad parcial</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ slider en HUD</td>
+<td>#83</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>Perfil /stats</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅</td>
+<td style="text-align: center;">✅ overlay tecla D</td>
+<td>#90</td>
+<td>✅</td>
+</tr>
+</tbody>
+</table>
+<p>Leyenda: ✅ cerrado / ⏳ pendiente / ❌ no disponible.</p>
+<p><strong>12 issues cerradas, 2 pendientes (#84+#85 reaction; #86+#87 temp humo).</strong></p>
+<hr>
+<h2 id="capacidades-del-motor">Capacidades del motor</h2>
+<h3 id="1-ciclo-de-combustion-fuel-burning-smoke">1. Ciclo de combustión (FUEL → BURNING → SMOKE)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <a href="../../engine/reaccion.h">engine/reaccion.h</a>, <code>aplicarReaccion()</code>.
+  Cada tick: FUEL → BURNING cuando <code>temperature &gt; UMBRAL_IGNICION (100°C)</code>;
+  BURNING → SMOKE cuando <code>reaction ≤ 0</code>.</li>
+<li><strong>Qué produce</strong>: transiciones de estado en <code>Celda.state</code> (enum <code>EstadoCelda</code>:
+  AIR, FUEL, BURNING, SMOKE — <strong>nota: NO existe BURNED</strong>, GODOT-CONTEXTO.md
+  estaba desactualizado en este punto).</li>
+<li><strong>API</strong>: <code>/tick</code> emite <code>CHANGED ... STATE TEMP</code> para todas las transiciones.
+  Pero <code>api/state.py</code> filtra: sólo BURNING y SMOKE llegan al cliente
+  (constante <code>_RENDERABLES</code>). FUEL y AIR se descartan a propósito.</li>
+<li><strong>Godot</strong>: sólo procesa <code>state == "BURNING"</code>
+  (<a href="../../godotUI/simulacion.gd">godotUI/simulacion.gd:447</a> <code>_aplicar_diffs</code>).
+  Cualquier otro estado (incluido SMOKE) BORRA la celda del set
+  <code>celdas_activas</code>. → <strong>SMOKE se descarta literalmente</strong>.</li>
+<li><strong>Valor narrativo</strong>: alto. El humo es visualmente clave en un simulador
+  de incendios; comunica "por aquí ya ha pasado el fuego" mejor que nada.</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: exponer SMOKE como partículas grises ascendentes.</li>
+<li>Issue: mostrar FUEL como "vegetación viva" coloreada por <code>fuel_coefficient</code>.</li>
+</ul>
+<h3 id="2-temperatura-por-celda">2. Temperatura por celda</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: producida por <code>aplicarReaccion</code>+<code>sostener_burning</code>
+  (<a href="../../engine/simulacion.h">engine/simulacion.h:556</a>) y advectada por
+  <a href="../../engine/adveccion.h">engine/adveccion.h</a>.</li>
+<li><strong>Qué produce</strong>: <code>Celda.temperature</code> (°C). En BURNING está clampada a
+  <code>TEMP_IGNICION = 800</code> cada tick. En SMOKE no se sostiene → advecta y decae
+  (NO es 400 fijo como afirmaba GODOT-CONTEXTO.md).</li>
+<li><strong>API</strong>: el campo <code>temperature</code> ya viaja en cada <code>CHANGED</code>, pero state.py
+  descarta diffs que sólo cambian temperatura dentro del mismo estado
+  (línea 28-29). El cliente recibe siempre 800 para BURNING y la última
+  temperatura SMOKE que hubo en la transición.</li>
+<li><strong>Godot</strong>: NO se usa. <code>_aplicar_diffs</code> ni lee la clave <code>temperature</code>.</li>
+<li><strong>Valor narrativo</strong>: medio. Una vez SMOKE esté en escena, animar el color
+  por temperatura (rojo→naranja→gris) cuenta el enfriamiento.</li>
+<li><strong>Acción sugerida</strong>: implementar tras SMOKE.</li>
+<li>Issue: dejar de filtrar diffs de temperatura en state.py (opt-in por
+    flag de tick para no inflar el wire).</li>
+<li>Issue: shader/gradiente de partícula por temperatura en Godot.</li>
+</ul>
+<h3 id="3-campo-de-velocidad-por-celda-fluido">3. Campo de velocidad por celda (fluido)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Celda.velocity</code> (<a href="../../engine/celda.h">engine/celda.h</a>),
+  alimentado por <code>aplicarBuoyancy</code>+<code>aplicarViento</code>+<code>resolverPresion</code>+<code>advectar</code>.</li>
+<li><strong>Qué produce</strong>: vector 3D por celda en cada cuadrante activo.</li>
+<li><strong>API</strong>: NO se serializa. Coste estimado: 12 bytes/celda × CELDAS_VOLUMEN
+  (50·50·20 = 50000) por cuadrante activo = 600 KB por cuadrante por tick.
+  Prohibitivo si se manda crudo.</li>
+<li><strong>Godot</strong>: NO se muestra.</li>
+<li><strong>Valor narrativo</strong>: medio. Visualizar el flujo del aire encima del incendio
+  es bonito pero accesorio. El viento (vector global) ya se ve si añadimos
+  una veleta — más simple y casi igual de informativo.</li>
+<li><strong>Acción sugerida</strong>: trabajo futuro (post-TFG). Si se hace, vía submuestreo
+  (ej.: 1 vector cada 5×5 celdas en plano horizontal medio).</li>
+</ul>
+<h3 id="4-densidad-de-humo-density">4. Densidad de humo (<code>density</code>)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Celda.density</code>. Alimentado por la reacción y advectado.
+  Entra en la fuerza de buoyancy: <code>f = A·T - B·ρ</code>.</li>
+<li><strong>API</strong>: NO se expone.</li>
+<li><strong>Godot</strong>: NO se muestra.</li>
+<li><strong>Valor narrativo</strong>: bajo. Visualmente redundante con SMOKE state.</li>
+<li><strong>Acción sugerida</strong>: no-op para el milestone. Si en el futuro queremos
+  densidad de humo gradual (en vez de partículas categóricas) se reconsidera.</li>
+</ul>
+<h3 id="5-reaccion-y-01">5. Reacción Y ∈ [0,1]</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Celda.reaction</code>, decrementada en <code>aplicarReaccion</code>
+  por <code>k·dt·fuel_coefficient</code>. 1.0 = recién encendida, 0.0 = agotada.</li>
+<li><strong>API</strong>: NO se expone.</li>
+<li><strong>Godot</strong>: NO se muestra.</li>
+<li><strong>Valor narrativo</strong>: medio. Modula bien la intensidad visual (al principio
+  llamarada, al final brasa).</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: exponer <code>reaction</code> en CHANGED como sexto campo opcional.</li>
+<li>Issue: usarla en Godot para modular <code>scale_min/max</code> o color de la
+    partícula (llamarada vs brasa).</li>
+</ul>
+<h3 id="6-fuel-coefficient-estatico-por-celda-de-superficie">6. Fuel coefficient (estático por celda de superficie)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: cargado de <code>world.dat</code>. Vive en
+  <code>Cuadrante::fuel_coefficient[idx]</code> (<a href="../../engine/cuadrante.h">engine/cuadrante.h:76</a>).
+  No cambia durante el tick — sólo lo modifica <code>pintar_firebreak</code> /
+  <code>deshacer_firebreak</code>.</li>
+<li><strong>API</strong>: NO expuesto. El cliente no puede saber qué celdas tienen
+  combustible alto (matorral denso) y cuáles bajo (roquedo, pedregal).</li>
+<li><strong>Godot</strong>: NO se muestra. El terreno es un shader de altura genérico.</li>
+<li><strong>Valor narrativo</strong>: alto. Un mapa de combustible visible explica mucho
+  mejor las decisiones de cortafuegos al usuario gestor. Es la "razón
+  visible" de por qué el fuego va por aquí y no por allí.</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: nuevo endpoint <code>GET /fuel_map</code> que devuelva una textura
+    (probablemente PNG en base64 o R8 binario) con <code>fuel_coefficient</code> por
+    celda de superficie. Una sola vez al arrancar — no cambia salvo
+    cortafuegos.</li>
+<li>Issue: integrar la textura en el shader del terreno (mezcla con el
+    color de altura). Repintar localmente al pintar/borrar cortafuegos.</li>
+</ul>
+<h3 id="7-presion-pa-por-celda">7. Presión (Pa por celda)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Celda.pressure</code>, salida de <code>resolverPresion</code> (Jacobi).</li>
+<li><strong>API</strong>: NO expuesto.</li>
+<li><strong>Godot</strong>: NO se muestra.</li>
+<li><strong>Valor narrativo</strong>: ninguno (físicamente irrelevante para el usuario gestor).
+  Sólo útil para debug del solver.</li>
+<li><strong>Acción sugerida</strong>: no-op.</li>
+</ul>
+<h3 id="8-cuadrantes-activos-inactivos">8. Cuadrantes activos / inactivos</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Simulacion::activos_</code> (set). Activación/desactivación
+  por umbral de temperatura en bordes (simulacion.h:485+).</li>
+<li><strong>API</strong>: NO expuesto. Pero <code>world.dat</code> ya implica una rejilla de cuadrantes
+  (deducible de <code>TERRENO_W/CELDAS_QUAD_X = 31</code> × <code>TERRENO_D/CELDAS_QUAD_Z = 27</code>
+  = 837 cuadrantes, 50×50 m cada uno).</li>
+<li><strong>Godot</strong>: NO se muestra.</li>
+<li><strong>Valor narrativo</strong>: medio. Como overlay de debug ("aquí está procesando
+  el motor") explica la arquitectura del rediseño — gran valor para la
+  defensa del TFG. Para el usuario gestor: bajo.</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: endpoint <code>GET /quadrants</code> con <code>[{qx, qz, activo: bool}]</code>.</li>
+<li>Issue: overlay en Godot (toggleable con tecla, ej. <code>Q</code>) que dibuja
+    rectángulos verdes en cuadrantes activos sobre el terreno.</li>
+</ul>
+<h3 id="9-viento-global">9. Viento global</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Simulacion::viento_motor_</code>. Vector horizontal en
+  m/s, aplicado por <code>aplicarViento</code> cada tick a celdas no-FUEL.</li>
+<li><strong>API</strong>: <code>POST /viento {vx, vz}</code> lo fija; no hay GET. El motor no expone
+  el valor actual (sólo accesor C++ <code>viento_motor()</code>).</li>
+<li><strong>Godot</strong>: HUD con sliders en X y Z que llaman a <code>/viento</code> al cambiar.
+  <strong>Falta feedback visual</strong>: el usuario no ve hacia dónde está soplando
+  ni con qué fuerza, sólo lee el número.</li>
+<li><strong>Valor narrativo</strong>: <strong>alto</strong>. El viento es uno de los factores más
+  intuitivos del comportamiento de un incendio. Si Godot lo enseña en
+  pantalla con una flecha grande, el TFG gana muchísimo en la demo.</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: veleta/flecha 3D en una esquina del terreno (o anclada a la
+    cámara) que apunta en <code>(vx, vz)</code> y escala con la magnitud.</li>
+<li>Issue (opcional): pequeñas partículas de "polvo" / hojas barridas por
+    el viento como capa ambiental.</li>
+</ul>
+<h3 id="10-cortafuegos-con-intensidad-parcial">10. Cortafuegos con intensidad parcial</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Simulacion::pintar_firebreak(wx, wz, intensidad)</code>.
+  <code>intensidad ∈ [0, 1]</code>: <code>nuevo_fuel = actual · (1 - intensidad)</code>.</li>
+<li><strong>API</strong>: <code>POST /firebreak {cells, intensidad}</code>. Pydantic valida 0 ≤ I ≤ 1.</li>
+<li><strong>Godot</strong>: el HUD envía siempre <code>intensidad: 1.0</code>
+  (<a href="../../godotUI/simulacion.gd">godotUI/simulacion.gd:716</a> <code>_enviar_lote_firebreak</code>).
+  El usuario NO tiene forma de pintar un cortafuegos parcial (despeje ligero
+  vs corte total).</li>
+<li><strong>Valor narrativo</strong>: medio. Realismo: en la práctica un cortafuegos no
+  es binario. Demo: poder pintar "raleo" y verlo frenar el fuego sólo
+  parcialmente comunica el modelo bien.</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: añadir un slider o tecla modifier (Shift = 0.5) que controle la
+    intensidad. Ajustar el splat para mostrar marrón más claro a menor
+    intensidad.</li>
+</ul>
+<h3 id="11-perfil-de-rendimiento-stats">11. Perfil de rendimiento (<code>/stats</code>)</h3>
+<ul>
+<li><strong>Dónde se calcula</strong>: <code>Simulacion::Profile</code>, acumulado en ns por fase
+  (viento, buoyancy, presión, advección, reacción, sostener, halos,
+  desact, act) + presion_iters/calls.</li>
+<li><strong>API</strong>: <code>GET /stats</code>. Devuelve dict de campos en ns.</li>
+<li><strong>Godot</strong>: NO consumido.</li>
+<li><strong>Valor narrativo</strong>: medio para la defensa del TFG (justifica decisiones
+  arquitectónicas: paralelismo OpenMP, parada temprana de Jacobi).</li>
+<li><strong>Acción sugerida</strong>:</li>
+<li>Issue: overlay debug toggleable (ej. tecla <code>D</code>) con una pequeña tabla
+    "fase → ms/tick" tomada de <code>/stats</code>.</li>
+<li>Issue (opcional): contador de "cuadrantes activos" y "celdas BURNING"
+    en el mismo overlay.</li>
+</ul>
+<hr>
+<h2 id="hallazgos-colaterales">Hallazgos colaterales</h2>
+<ul>
+<li><strong><code>EstadoCelda::BURNED</code> NO existe</strong> en <a href="../../engine/celda.h">engine/celda.h</a>.
+  La GODOT-CONTEXTO.md afirma lo contrario; el ciclo real termina en SMOKE.
+  → Si queremos "ceniza visible permanente" hay que decidir: (a) añadir
+  BURNED en C++, (b) tratar SMOKE viejo como ceniza, (c) tintar el splat
+  del terreno (mezcla con el de cortafuegos).</li>
+<li><strong>Temperatura SMOKE no es 400°C fija</strong> — GODOT-CONTEXTO.md también
+  desactualizado en ese punto. SMOKE advecta y decae.</li>
+<li><strong><code>simulacion-bkup1.gd</code> se quedó dentro de godotUI/</strong> tras el primer
+  commit; revisar si tiene sentido conservarlo o borrarlo en una limpieza.</li>
+</ul>
+<hr>
+<h2 id="orden-de-prioridad-sugerido-input-al-paso-3">Orden de prioridad sugerido (input al PASO 3)</h2>
+<p><strong>Bloque A — valor visual inmediato (cierra la mayor parte de la brecha):</strong>
+1. Mostrar SMOKE (gris ascendente) ← más impacto/coste, casi gratis.
+2. Veleta de viento en pantalla.
+3. Mapa de combustible (fuel_coefficient) sobre el terreno.</p>
+<p><strong>Bloque B — narrativa de la simulación:</strong>
+4. Estado FUEL con color por densidad de combustible (puede solaparse con 3).
+5. Reacción Y modulando intensidad/color de la partícula.
+6. Slider de intensidad de cortafuegos.
+7. Temperatura por celda animando el color BURNING (llamarada → brasa).</p>
+<p><strong>Bloque C — debug y defensa del TFG:</strong>
+8. Overlay de cuadrantes activos.
+9. Overlay con <code>/stats</code> (latencia por fase, contadores).</p>
+<p><strong>Bloque D — investigación / opcional:</strong>
+10. Campo de velocidad submuestreado (vectores de aire).
+11. Estado "ceniza" permanente (decisión BURNED vs SMOKE viejo vs splat).</p>
+<hr>
+<h2 id="apendice-escrito-al-cierre-del-milestone">Apéndice (escrito al cierre del milestone)</h2>
+<h3 id="lo-que-cambio-respecto-a-la-planificacion">Lo que cambió respecto a la planificación</h3>
+<table>
+<thead>
+<tr>
+<th>Punto del plan inicial</th>
+<th>Realidad al cierre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#79 "render SMOKE en partículas"</td>
+<td>Se hizo como <strong>MultiMesh</strong> para SMOKE + <strong>GPUParticles</strong> para fuego (#96 deshizo parcialmente #79 por feedback visual).</td>
+</tr>
+<tr>
+<td>#79 colateral "se queda <code>simulacion-bkup1.gd</code>"</td>
+<td>El archivo sigue ahí — limpieza pospuesta al próximo milestone.</td>
+</tr>
+<tr>
+<td>Bloque B #4 (color FUEL por fuel_coefficient)</td>
+<td>Realizado como <strong>tinte por fuel_map del shader</strong>, con valores derivados de la <strong>clasificación hiperespectral real</strong>, no de un colormap inventado. Mucho más fiel al TFG.</td>
+</tr>
+<tr>
+<td>Bloque D #11 ("estado ceniza permanente")</td>
+<td>Resuelto con <strong>canal G del splat RG8</strong>, sin necesidad de añadir BURNED al motor. Issue #91 cerrada como duplicada.</td>
+</tr>
+<tr>
+<td>Hallazgo no previsto</td>
+<td><strong>El <code>state</code> SMOKE no se propaga vertical en el motor</strong>. Obligó a la decisión "SMOKE virtual" (#92) y el toggle (#94). Ver <a href="state-smoke-no-propaga-en-aire.html">state-smoke-no-propaga-en-aire</a>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="issues-que-no-se-atacaron-y-por-que">Issues que NO se atacaron y por qué</h3>
+<ul>
+<li><strong>#84, #85</strong> (reaction en CHANGED + modular partícula). Sin bloqueo
+  técnico, simplemente prioridad. Quedan para el próximo milestone
+  o como mejora puntual.</li>
+<li><strong>#86</strong> (no filtrar diffs de temp dentro del mismo estado). <strong>En
+  tensión directa con #92</strong>: subí <code>UMBRAL_TEMP_CHANGED</code> de 0.5 a
+  10°C para reducir el ×62 de diffs. Si se baja, se reabren las
+  diffs masivas pero se gana variación de temperatura intra-SMOKE.
+  Decisión a tomar antes de implementar.</li>
+<li><strong>#87</strong> (gradiente color humo por temperatura). Bloqueada por la
+  decisión sobre #86.</li>
+</ul>
+<h3 id="bugs-significativos-del-camino-postmortems">Bugs significativos del camino (postmortems)</h3>
+<ul>
+<li><a href="race-condition-motor-stdin-stdout.html">race-condition-motor-stdin-stdout</a> — el más serio.</li>
+<li><a href="int16-overflow-build-world.html">int16-overflow-build-world</a> — captura ~99 % del mapa.</li>
+<li><a href="state-smoke-no-propaga-en-aire.html">state-smoke-no-propaga-en-aire</a> — hallazgo, no bug del motor.</li>
+<li><a href="veleta-no-renderiza-en-canvaslayer.html">veleta-no-renderiza-en-canvaslayer</a> — específico de Godot 4.</li>
+</ul>
+<h3 id="suite-de-tests-al-cierre">Suite de tests al cierre</h3>
+<table>
+<thead>
+<tr>
+<th></th>
+<th style="text-align: right;">Inicio</th>
+<th style="text-align: right;">Cierre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Motor</td>
+<td style="text-align: right;">165 OK</td>
+<td style="text-align: right;"><strong>183 OK</strong></td>
+</tr>
+<tr>
+<td>API</td>
+<td style="text-align: right;">65 OK</td>
+<td style="text-align: right;"><strong>88 OK</strong></td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong>230</strong></td>
+<td style="text-align: right;"><strong>271</strong> (+41 netos)</td>
+</tr>
+</tbody>
+</table>
+<p>Cero regresiones netas. Coordenadas migradas de cuadrante (5, 5) a
+(16, 2) por necesidad del nuevo mapa de fuel; snapshot determinista
+recalculado.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

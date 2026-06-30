@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El Grid y la Celda — estructuras de datos fundamentales · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor C++</p>
+    <h1>El Grid y la Celda — estructuras de datos fundamentales</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento desactualizado (revisado 2026-06-27)</div><div class="callout-body"><p>Esta ficha describe el motor <strong>monolítico previo al rediseño por cuadrantes</strong>:
+la <code>Celda</code> que muestra no tiene <code>fuel_coefficient</code>, su estado por defecto es
+<code>EMPTY</code> y el ciclo es <code>EMPTY → BURNING → SMOKE</code> (modelo viejo, sin <code>FUEL</code>).
+El motor real usa <strong>6</strong> estados (<code>AIR/FUEL/BURNING/SMOKE/EMPTY/CORTAFUEGOS</code>),
+el grid vive en <code>engine/cuadrante.h</code> como <code>SubGrid</code> de <strong>50×50×20</strong> (no existe
+<code>engine/grid.h</code>, ni el <code>100×10×100</code> de aquí) y el ciclo real es
+<code>FUEL → BURNING → SMOKE</code>. Para el estado vigente ver <a href="celda.html">celda</a>, <a href="cuadrante.html">cuadrante</a>
+y <a href="simulacion.html">simulacion</a>.</p></div></div>
+<h2 id="la-celda-celda">La Celda (<code>Celda</code>)</h2>
+<p><strong>Archivo:</strong> <code>engine/celda.h</code></p>
+<p>Una celda es el átomo del sistema. Representa un volumen cúbico del espacio
+de simulación y almacena el estado físico del fluido en ese punto.</p>
+<pre><code class="language-cpp">struct Celda {
+    Vec3  velocity;             // dirección y velocidad del fluido (m/s)
+    float pressure    = 0.0f;  // presión del fluido (Pa)
+    float density     = 0.0f;  // densidad del humo (kg/m³)
+    float temperature = 0.0f;  // temperatura (°C)
+    float reaction    = 0.0f;  // combustible: 1.0 = lleno, 0.0 = agotado
+
+    EstadoCelda state = EstadoCelda::EMPTY;
+};
+</code></pre>
+<h3 id="por-que-estos-campos-y-no-otros">Por qué estos campos y no otros</h3>
+<p><strong><code>velocity</code></strong> — el campo de velocidades es el "motor" del fluido. Sin él,
+el fuego no podría moverse ni el humo ascender. Es un Vec3 porque el fluido
+se mueve en las tres dimensiones del espacio.</p>
+<p><strong><code>pressure</code></strong> — la presión no es un campo físico observable directamente,
+sino un campo auxiliar que usamos para forzar la incompresibilidad del fluido.
+Ver <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> paso 2.</p>
+<p><strong><code>density</code></strong> — la densidad del humo en cada celda. Cuanta más densidad,
+más opaca visualmente debería ser la celda. También modera la flotabilidad
+(humo denso sube menos que humo ligero).</p>
+<p><strong><code>temperature</code></strong> — la temperatura impulsa la flotabilidad y es el campo
+visual principal para representar el fuego. A 800 °C una celda está ardiendo
+activamente; a 300 °C es humo caliente; a 20 °C es aire ambiente.</p>
+<p><strong><code>reaction</code></strong> — la "coordenada de reacción" del paper de Nvidia. Representa
+cuánto combustible queda. Es un valor normalizado [0, 1] que simplifica
+enormemente el modelo: no necesitamos rastrear el tipo de material, solo
+cuánto queda por quemar.</p>
+<h3 id="los-tres-estados-de-una-celda">Los tres estados de una celda</h3>
+<pre><code>EMPTY   → sin material significativo, ignorada en la serialización
+BURNING → ardiendo, tiene combustible (reaction &gt; 0)
+SMOKE   → combustible agotado, sigue transportando temperatura y densidad
+</code></pre>
+<p>La transición siempre es en una dirección: EMPTY → BURNING → SMOKE.
+Una celda nunca vuelve a BURNING desde SMOKE (no hay re-ignición en este MVP).</p>
+<p>Ver ciclo de vida en: <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a></p>
+<hr>
+<h2 id="el-grid">El Grid</h2>
+<p><strong>Archivo:</strong> <code>engine/grid.h</code></p>
+<p>El grid es un cubo de celdas en memoria. Sus dimensiones son <code>sizeX × sizeY × sizeZ</code>.</p>
+<h3 id="almacenamiento-lineal-en-memoria">Almacenamiento lineal en memoria</h3>
+<p>Las celdas se almacenan en un <code>std::vector&lt;Celda&gt;</code> contiguo en memoria (caché-friendly).
+La conversión de coordenadas 3D a índice lineal usa esta fórmula:</p>
+<pre><code class="language-cpp">index(x, y, z) = x + sizeX * (y + sizeY * z)
+</code></pre>
+<p>Esto equivale a "primero varía x, luego y, luego z" — orden row-major en z.</p>
+<p><strong>Por qué importa el orden:</strong> Los bucles del motor siempre iteran <code>z → y → x</code>
+(el eje que varía más rápido va en el bucle más interno). Esto garantiza acceso
+secuencial a memoria, minimizando los fallos de caché.</p>
+<h3 id="la-funcion-isvalid">La función <code>isValid</code></h3>
+<pre><code class="language-cpp">bool isValid(int x, int y, int z) const
+</code></pre>
+<p>Antes de acceder a un vecino, siempre se comprueba si está dentro del grid.
+Los vecinos fuera del borde se tratan de forma conservadora: presión 0,
+velocidad igual a la celda actual (gradiente cero en los bordes).</p>
+<p>Esto implementa condiciones de contorno de tipo "pared": el fluido no sale
+del grid. Es una aproximación válida para MVP 3; en iteraciones futuras
+se podrían implementar condiciones de contorno abiertas (el humo "escapa"
+por los bordes superiores).</p>
+<h3 id="tamano-actual-y-escalabilidad">Tamaño actual y escalabilidad</h3>
+<pre><code>100 × 10 × 100 = 100.000 celdas
+Cada celda ≈ 7 floats + 1 enum = ~32 bytes
+Total en memoria: ~3.2 MB por grid
+</code></pre>
+<p>Durante un tick se manejan hasta 3 grids simultáneos (original, adelante, atrás
+en la advección MacCormack) → pico de ~10 MB.
+Ver: <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="protocolo-del-motor.html">Protocolo del Motor</a></p>
+<p>A 15 ticks/segundo, el motor procesa ~1.5M celdas/segundo. Es suficiente para
+visualización en tiempo real en MVP 3.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

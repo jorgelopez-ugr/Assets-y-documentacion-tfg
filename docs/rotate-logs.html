@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rotate_logs.py — rotación manual de logs · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Logging</p>
+    <h1>rotate_logs.py — rotación manual de logs</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="sistema-de-logging.html">Sistema de Logging</a></p>
+<div class="callout callout-danger"><div class="callout-title"><span class="callout-icon">⛔</span> OBSOLETO (2026-06-15)</div><div class="callout-body"><p>El subsistema de logging quedó en desuso. <code>rotate_logs.py</code> y su test
+<strong>se sacaron del control de versiones</strong> el 2026-06-15 (la carpeta <code>logs/</code>
+entera está ahora en <code>.gitignore</code>). El script sigue en disco localmente,
+pero ya no forma parte del repositorio. Nota conservada como referencia
+histórica.</p></div></div>
+<h2 id="proposito">Propósito</h2>
+<p>Los ficheros <code>.log</code> crecen sin límite si nadie los administra. Este script comprime los logs que superan los umbrales configurables y los guarda con fecha para que sea fácil encontrarlos. El fichero original se <strong>vacía pero no se elimina</strong>, para que los handlers de logging activos no rompan al intentar escribir en él.</p>
+<hr>
+<h2 id="uso">Uso</h2>
+<pre><code class="language-bash"># Desde la raíz del proyecto
+python logs/rotate_logs.py
+
+# Ver qué se rotaría sin modificar nada
+python logs/rotate_logs.py --dry-run
+</code></pre>
+<p>Salida típica:</p>
+<pre><code>Rotación de logs en: /ruta/al/proyecto/logs
+  umbral tamaño : 1 MB
+  umbral edad   : 7 días
+
+  sin cambios : engine.log
+  rotando     : api.log → api.log.2026-04-17.gz  (1.23 MB ≥ 1 MB)
+
+1 fichero(s) rotado(s).
+</code></pre>
+<hr>
+<h2 id="umbrales-configurables">Umbrales configurables</h2>
+<p>Al principio del script hay dos constantes:</p>
+<pre><code class="language-python">MAX_SIZE_MB  = 1    # comprimir si el fichero supera este tamaño en MB
+MAX_AGE_DAYS = 7    # comprimir si el fichero tiene más de estos días
+</code></pre>
+<p>Un fichero se rota si cumple <strong>cualquiera</strong> de los dos criterios. Los ficheros vacíos nunca se rotan.</p>
+<hr>
+<h2 id="nombre-del-fichero-comprimido">Nombre del fichero comprimido</h2>
+<pre><code>api.log  →  api.log.2026-04-17.gz
+</code></pre>
+<p>Si ya existe un <code>.gz</code> con la misma fecha (por ejemplo, si el script se ejecuta dos veces el mismo día), se añade un sufijo numérico:</p>
+<pre><code>api.log.2026-04-17.gz      ← ya existía
+api.log.2026-04-17.1.gz    ← nuevo
+api.log.2026-04-17.2.gz    ← si vuelve a ejecutarse
+</code></pre>
+<hr>
+<h2 id="por-que-truncar-en-lugar-de-eliminar">Por qué truncar en lugar de eliminar</h2>
+<p>Si se eliminara el <code>.log</code> activo, el <code>RotatingFileHandler</code> de la API perdería el descriptor de fichero y dejaría de escribir logs hasta el siguiente reinicio. Truncar (vaciar a 0 bytes) mantiene el descriptor válido — los nuevos mensajes se escriben desde el principio del fichero vacío.</p>
+<p>Esta misma razón hace que <strong>no se deba usar este script mientras la API está en producción sin precaución</strong>. Lo correcto es ejecutarlo durante una ventana de mantenimiento o configurar un cronjob de madrugada.</p>
+<hr>
+<h2 id="cronjob-futuro">Cronjob (futuro)</h2>
+<p>El script incluye un ejemplo comentado al principio:</p>
+<pre><code class="language-bash"># 0 3 * * * /usr/bin/python3 /ruta/proyecto/logs/rotate_logs.py
+</code></pre>
+<p>Esto ejecutaría la rotación todos los días a las 3:00. Por el momento la rotación es manual.</p>
+<hr>
+<h2 id="relacion-con-el-rotatingfilehandler">Relación con el <code>RotatingFileHandler</code></h2>
+<p>La API tiene su propio mecanismo de rotación interno (5 MB automáticos, 3 backups). <code>rotate_logs.py</code> es complementario:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>RotatingFileHandler</code></th>
+<th><code>rotate_logs.py</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cuándo actúa</td>
+<td>Durante la sesión, automático</td>
+<td>Manual / cronjob</td>
+</tr>
+<tr>
+<td>Qué hace</td>
+<td>Renombra a <code>.log.1</code>, <code>.log.2</code>...</td>
+<td>Comprime con fecha <code>.gz</code></td>
+</tr>
+<tr>
+<td>Backups</td>
+<td>3 ficheros sin fecha</td>
+<td>Indefinidos con fecha</td>
+</tr>
+<tr>
+<td>Requiere reinicio</td>
+<td>No</td>
+<td>No (truncate)</td>
+</tr>
+</tbody>
+</table>
+<p>Para un despliegue real, los dos mecanismos conviven: el handler gestiona el crecimiento intradiario y el script archiva los <code>.log.1</code> / <code>.log.2</code> con fecha.</p>
+<hr>
+<h2 id="tests">Tests</h2>
+<pre><code class="language-bash">cd /ruta/proyecto
+api/.venv/bin/pytest logs/test_rotate_logs.py -v   # 6 tests
+</code></pre>
+<p>Casos cubiertos: rotación por tamaño, por antigüedad, sin rotación, log vacío, colisión de fecha con sufijo numérico, dry-run.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

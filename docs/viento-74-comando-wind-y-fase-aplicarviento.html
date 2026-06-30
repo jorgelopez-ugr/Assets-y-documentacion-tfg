@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viento — `#74` — Comando `WIND` y fase `aplicarViento` · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Viento — `#74` — Comando `WIND` y fase `aplicarViento`</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a> · <a href="mvp-arquitectura-de-cuadrantes.html">MVP — Arquitectura de Cuadrantes</a> · <a href="optimizacion-62-profiling-por-fase.html">Optimización — 62 — Profiling por fase</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Primera pieza del milestone "Viento"</strong>: nuevo header <code>engine/viento.h</code>
+  con <code>aplicarViento</code>, nueva fase en el <code>tick()</code> del motor que añade una
+  aceleración horizontal uniforme al campo de velocidades, nuevo comando
+  <code>WIND vx vz</code> en el protocolo, profile_.viento instrumentado.</li>
+<li><strong>La trampa de los ejes queda blindada dentro de <code>Simulacion</code></strong>: el
+  endpoint y el protocolo usan coordenadas del <strong>mundo</strong> (<code>vx = X mundo</code>,
+  <code>vz = Z mundo</code>). El swap a la convención interna del motor
+  (<code>Vec3.y → Z mundo</code>, NO <code>Vec3.z</code>) ocurre <strong>una sola vez</strong> en
+  <code>set_viento</code>. Después <code>aplicarViento</code> puede sumar componente a
+  componente sin condicionales.</li>
+<li><strong>Determinismo preservado</strong>: con <code>viento_motor_ = (0, 0, 0)</code> la nueva
+  fase es no-op (sumar 0 al campo de velocidades), así que el snapshot
+  numérico de 10 ticks pasa SIN re-snapshotar. Confirmado.</li>
+<li><strong>19 asserts C++ + 3 bash nuevos</strong>. Test crítico: <code>viento_Z_acumula_en_velocity_y</code>
+  — si alguien rompe el swap, ese test lo caza directamente.</li>
+</ul>
+<h2 id="por-que-la-convencion-esta-hecha-asi">Por qué la convención está hecha así</h2>
+<p>El milestone empezó con la documentación de la convención de ejes en
+<code>docs/convenciones-ejes.md</code> porque era bloqueante. Resumen breve:</p>
+<table>
+<thead>
+<tr>
+<th>Significado</th>
+<th>Vec3 motor</th>
+<th>API JSON</th>
+<th>Godot</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Vertical</td>
+<td><code>velocity.z</code></td>
+<td><code>cell.y</code></td>
+<td><code>Y</code></td>
+</tr>
+<tr>
+<td>Horizontal X mundo</td>
+<td><code>velocity.x</code></td>
+<td><code>cell.x</code></td>
+<td><code>X</code></td>
+</tr>
+<tr>
+<td>Horizontal Z mundo</td>
+<td><code>velocity.y</code> (¡!)</td>
+<td><code>cell.z</code></td>
+<td><code>Z</code></td>
+</tr>
+</tbody>
+</table>
+<p>En el motor, <strong><code>Vec3.y</code> corresponde al eje horizontal Z mundo</strong>. Esto es
+contraintuitivo si uno lee "vel.y" pensando que es vertical (no lo es:
+<code>vel.z</code> es el vertical, según <code>buoyancy.h::aplicarBuoyancy</code>).</p>
+<p>El plan original del HANDOFF decía:</p>
+<pre><code class="language-cpp">c.velocity.z += viento.z * dt * acoplamiento;   // ← BUG
+</code></pre>
+<p>Eso habría empujado humo verticalmente en lugar de lateralmente.
+Reescrito a:</p>
+<pre><code class="language-cpp">c.velocity.y += viento.y * dt * acoplamiento;   // .y mapea a Z mundo
+</code></pre>
+<p>Y para que el resto del código no tenga que pensar en este swap, la
+traducción se hace una sola vez en <code>set_viento</code> (que recibe nombres
+del mundo) y se guarda en <code>viento_motor_</code> con la convención motor.</p>
+<h2 id="diseno">Diseño</h2>
+<h3 id="enginevientoh-nuevo"><code>engine/viento.h</code> (nuevo)</h3>
+<pre><code class="language-cpp">void aplicarViento(SubGrid&amp; g, const Vec3&amp; viento, float dt,
+                   float acoplamiento = 0.1f) {
+    const float ax = viento.x * dt * acoplamiento;
+    const float ay = viento.y * dt * acoplamiento;
+
+    for (int z = 0; z &lt; g.sizeZ; z++) {
+        for (int y = 0; y &lt; g.sizeY; y++) {
+            for (int x = 0; x &lt; g.sizeX; x++) {
+                Celda&amp; c = g.get(x, y, z);
+                if (c.state == EstadoCelda::FUEL) continue;  // sólo gases
+                c.velocity.x += ax;
+                c.velocity.y += ay;
+                // velocity.z NO se toca: exclusivo de buoyancy.
+            }
+        }
+    }
+}
+</code></pre>
+<p><code>ax</code> y <code>ay</code> se precalculan fuera del bucle — no cambian con la celda.
+Acoplamiento por defecto 0.1 (inercia moderada). Aplicación sólo a
+gases (AIR/BURNING/SMOKE), nunca a FUEL.</p>
+<h3 id="simulacionhset_viento"><code>simulacion.h::set_viento</code></h3>
+<pre><code class="language-cpp">void set_viento(float vx_mundo, float vz_mundo) {
+    viento_motor_.x = vx_mundo;
+    viento_motor_.y = vz_mundo;   // ← swap: Z mundo va al componente .y
+    viento_motor_.z = 0.0f;       // vertical: no aplica al viento
+}
+</code></pre>
+<p>Único punto del código donde sucede el swap. El resto del motor lee
+<code>viento_motor_</code> directamente y suma componente a componente.</p>
+<h3 id="fase-en-tick">Fase en <code>tick()</code></h3>
+<p>Antes de <code>aplicarBuoyancy</code> en el bucle paralelo, con su propio sample
+de tiempo:</p>
+<pre><code class="language-cpp">auto t0 = clock::now();
+aplicarViento(c.grid, viento_motor_, dt);
+const uint64_t ns_v = ns_desde(t0);
+// ...
+#pragma omp atomic update
+profile_.viento += ns_v;
+</code></pre>
+<p>Orden de fases en el tick():</p>
+<pre><code>aplicarViento → aplicarBuoyancy → resolverPresion → advectar
+              → aplicarReaccion → sostener_burning
+</code></pre>
+<p>El viento entra antes que la buoyancy porque el efecto debe estar
+presente cuando la presión proyecta a flujo incompresible. Si el viento
+fuera después de la presión, sus efectos quedarían "no balanceados" y
+el campo divergiría en pasos posteriores.</p>
+<h3 id="stats-actualizado"><code>STATS</code> actualizado</h3>
+<pre><code>STATS ticks=N viento=ns buoyancy=ns presion=ns adveccion=ns reaccion=ns
+      sostener=ns halos=ns desact=ns act=ns presion_iters=N presion_calls=N
+</code></pre>
+<p><code>viento</code> se sitúa justo después de <code>ticks</code> y antes de <code>buoyancy</code> para
+reflejar el orden físico de aplicación.</p>
+<h3 id="handler-wind-en-maincpp">Handler <code>WIND</code> en <code>main.cpp</code></h3>
+<pre><code class="language-cpp">} else if (cmd == &quot;WIND&quot;) {
+    float vx = 0.0f, vz = 0.0f;
+    if (iss &gt;&gt; vx &gt;&gt; vz) sim.set_viento(vx, vz);
+}
+</code></pre>
+<p>Sin respuesta del motor — el comando es de set, análogo a <code>IGNITE</code> en
+ese sentido (que tampoco responde directamente). La verificación
+externa es ver <code>STATS.viento &gt; 0</code> tras un tick.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="c-test_simulacioncpp-6-funciones-19-asserts">C++ (<code>test_simulacion.cpp</code>) — 6 funciones, 19 asserts</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_set_viento_swap_a_convencion_motor</code></td>
+<td><code>set_viento(10, 5)</code> → <code>.x=10, .y=5, .z=0</code>.</td>
+</tr>
+<tr>
+<td><code>test_reset_borra_viento</code></td>
+<td><code>set_viento + reset</code> → vuelve a <code>(0,0,0)</code>.</td>
+</tr>
+<tr>
+<td><code>test_aplicarViento_toca_x_e_y_no_z</code></td>
+<td>Unit test puro: con un SubGrid sintético, <code>aplicarViento</code> modifica <code>velocity.x</code> y <code>.y</code> en AIR/BURNING/SMOKE; NO modifica <code>.z</code> ni celdas FUEL.</td>
+</tr>
+<tr>
+<td><code>test_viento_X_acumula_en_velocity_x</code></td>
+<td>Tras <code>set_viento(10, 0)</code> + 5 ticks, suma de <code>velocity.x</code> en celdas gaseosas &gt; 0.</td>
+</tr>
+<tr>
+<td><code>test_viento_Z_acumula_en_velocity_y</code></td>
+<td><strong>Test crítico</strong>: tras <code>set_viento(0, 10)</code> + 5 ticks, suma de <code>velocity.y</code> &gt; 0 (verifica el swap a <code>.y</code>).</td>
+</tr>
+<tr>
+<td><code>test_profile_viento_acumula</code></td>
+<td><code>profile_.viento &gt; 0</code> tras 3 ticks.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="bash-test_mainsh-3-asserts-del-protocolo">Bash (<code>test_main.sh</code>) — 3 asserts del protocolo</h3>
+<ul>
+<li><code>STATS</code> contiene el campo <code>viento=</code>.</li>
+<li><code>STATS.viento &gt; 0</code> tras 2 ticks con cuadrante activo.</li>
+<li><code>WIND</code> malformado (sin argumentos) no rompe el bucle de comandos.</li>
+</ul>
+<p>Además se actualizó la lista de campos esperados en STATS (<code>ticks viento
+buoyancy presion ...</code>) para que el test que itera los nombres incluya
+<code>viento</code>.</p>
+<h3 id="resultados">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#73 mergeado)</th>
+<th style="text-align: right;">Después (#74)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">31 OK</td>
+<td style="text-align: right;"><strong>35 OK</strong> (+4)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">74 OK</td>
+<td style="text-align: right;"><strong>93 OK</strong> (+19)</td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">65 OK</td>
+<td style="text-align: right;">65 OK (sin tocar)</td>
+</tr>
+<tr>
+<td>Snapshot numérico (10 ticks)</td>
+<td style="text-align: right;">OK</td>
+<td style="text-align: right;"><strong>OK sin re-snapshotar</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/viento.h</code> (nuevo) — <code>aplicarViento</code> (~35 LOC con docs).</li>
+<li><code>engine/simulacion.h</code>:</li>
+<li><code>#include "viento.h"</code>.</li>
+<li><code>Profile::viento</code> campo nuevo.</li>
+<li><code>Vec3 viento_motor_</code> miembro privado.</li>
+<li><code>set_viento(vx_mundo, vz_mundo)</code> público con el swap.</li>
+<li><code>viento_motor()</code> getter público sólo lectura.</li>
+<li>Fase <code>aplicarViento</code> en <code>tick()</code> ANTES de <code>aplicarBuoyancy</code>.</li>
+<li>Acumulación atómica <code>profile_.viento += ns_v</code>.</li>
+<li><code>reset()</code> limpia <code>viento_motor_</code>.</li>
+<li><code>engine/main.cpp</code>:</li>
+<li>Handler <code>WIND vx vz</code>.</li>
+<li><code>STATS</code> añade <code>viento=</code>.</li>
+<li>Cabecera de comentarios del protocolo actualizada.</li>
+<li><code>engine/test_simulacion.cpp</code> — 6 funciones, 19 asserts.</li>
+<li><code>engine/test_main.sh</code> — 3 asserts + lista de campos actualizada.</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong><code>ax</code> y <code>ay</code> precalculados fuera del bucle</strong>. La aceleración por
+   tick es constante (no depende de <code>(x, y, z)</code>), así que <code>viento.x *
+   dt * acoplamiento</code> se calcula una vez por cuadrante en lugar de
+   125000 veces (50×50×50, total celdas del SubGrid).</p>
+</li>
+<li>
+<p><strong>Sólo gases, no FUEL</strong>. El viento es una fuerza sobre el fluido.
+   <code>FUEL</code> representa combustible sólido — un árbol no se mueve con el
+   viento dentro del modelo. Cuando una celda FUEL ignita y pasa a
+   BURNING, en ese momento empieza a recibir el empuje del viento.</p>
+</li>
+<li>
+<p><strong>Cero comprobaciones de signo o magnitud</strong>. Confiamos en la API
+   (issue #75) para validar <code>vx</code>, <code>vz</code>. El motor acepta lo que le
+   manden — si Godot envía valores absurdos, el bbox del frente lo
+   delatará visualmente.</p>
+</li>
+<li>
+<p><strong><code>profile_.viento &gt; 0</code> incluso sin viento configurado</strong>. El bucle
+   recorre todas las celdas siempre, sumando 0 si el viento es cero.
+   El coste es la baseline del overhead; con viento configurado debería
+   ser comparable. No vale la pena hacer un "if (viento==0) skip"
+   porque el overhead total es del orden de buoyancy (~1 % del tick).</p>
+</li>
+<li>
+<p><strong>Posición de la fase ANTES de buoyancy</strong>. Documentado en el
+   comentario del código. La razón: la presión proyectará el campo
+   resultante a incompresible; si el viento entrase después de la
+   presión, sus efectos quedarían no balanceados.</p>
+</li>
+<li>
+<p><strong>Test unitario puro para <code>aplicarViento</code></strong>. En lugar de probar
+   sólo end-to-end (que mezcla todas las fases), <code>test_aplicarViento_toca_x_e_y_no_z</code>
+   monta un SubGrid sintético y verifica la función aislada. Detecta
+   bugs en la propia fase sin depender de la cadena completa.</p>
+</li>
+<li>
+<p><strong>El test crítico de Z se queda corto en lo que verifica</strong>. Sólo
+   comprueba que <code>velocity.y</code> se incrementa con viento (0, 10); no
+   compara magnitudes ni signos vs un baseline. Es lo necesario y
+   suficiente para detectar un swap roto. La validación física más
+   profunda (bbox del frente desplazado en Z) queda para la issue #76.</p>
+</li>
+</ol>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="74-entrega-los-criterios-de-aceptacion-al-100">74 entrega los criterios de aceptación al 100 %:</h1>
+<ul>
+<li>[x] Compila sin warnings (<code>g++ -std=c++17 -Wall -Wextra -fopenmp</code>).</li>
+<li>[x] Tests existentes pasan (cero regresiones).</li>
+<li>[x] Determinismo numérico preservado sin re-snapshotar.</li>
+<li>[x] <code>set_viento</code> hace el swap correcto.</li>
+<li>[x] <code>aplicarViento</code> modifica <code>.x</code> y <code>.y</code>, NO <code>.z</code>, NO FUEL.</li>
+<li>[x] <code>viento_X</code> acumula en <code>velocity.x</code>, <code>viento_Z</code> acumula en <code>velocity.y</code> (convención motor).</li>
+<li>[x] <code>profile_.viento</code> instrumentado y expuesto en <code>STATS</code>.</li>
+<li>[x] <code>WIND</code> en el protocolo, handler robusto a malformación.</li>
+</ul>
+<p><strong>Siguiente</strong>: <a href="viento-75-endpoint-api.html">Viento — #75</a> (cuando
+exista). Wrapper <code>motor.set_viento(vx, vz)</code> en <code>api/motor.py</code> y
+endpoint <code>POST /viento {vx, vz}</code> con validación pydantic.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

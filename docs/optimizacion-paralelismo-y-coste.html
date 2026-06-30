@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización del motor — Paralelismo y reducción de coste · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización del motor — Paralelismo y reducción de coste</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h2 id="por-que-este-milestone-existe">Por qué este milestone existe</h2>
+<p>Tras el MVP 4 (<a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a>) la propagación funciona,
+pero el motor se vuelve inusable cuando el frente de fuego crece. Bench del
+9-may-2026, ignición central, sin Godot conectado, Ryzen 7 5800H:</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>BURNING</th>
+<th>SMOKE</th>
+<th>Latencia tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td>3</td>
+<td>2</td>
+<td>27 ms</td>
+</tr>
+<tr>
+<td>60</td>
+<td>1279</td>
+<td>3255</td>
+<td>147 ms</td>
+</tr>
+<tr>
+<td>100</td>
+<td>2651</td>
+<td>19357</td>
+<td>726 ms</td>
+</tr>
+<tr>
+<td>140</td>
+<td>25593</td>
+<td>99360</td>
+<td>4.1 s</td>
+</tr>
+<tr>
+<td>160</td>
+<td>52390</td>
+<td>260915</td>
+<td>10.0 s</td>
+</tr>
+</tbody>
+</table>
+<p>CPU al ~2% del total durante todo el bench: el motor corre <strong>monohilo</strong> y deja
+sin usar 7 de los 8 cores. La oportunidad es enorme.</p>
+<h2 id="objetivo-concreto">Objetivo concreto</h2>
+<p><strong>Tick a 50.000 BURNING &lt; 1 segundo</strong> en Ryzen 5800H.</p>
+<p>Restricciones:
+- API pública (<code>/tick</code>, <code>/snapshot</code>, <code>/ignite</code>, <code>/reset</code>) no se altera.
+- Cliente Godot no se toca.
+- Cero regresiones en tests existentes.
+- Cualquier cambio en valores físicos (A, B, k, dt, iteraciones Jacobi) se
+  documenta con justificación numérica.</p>
+<h2 id="diagnostico-de-partida">Diagnóstico de partida</h2>
+<ol>
+<li>Bucle <code>for (uint32_t id : activos_)</code> en <code>Simulacion::tick()</code> es secuencial
+   pero <strong>trivialmente paralelo</strong>: los cuadrantes son independientes durante
+   el cuerpo del bucle (los halos se propagan después). Palanca principal.</li>
+<li><code>resolverPresion()</code> ejecuta 30 iteraciones Jacobi fijas. Probable
+   sobre-iteración: convergencia real puede alcanzarse antes. Palanca
+   secundaria, hay que medir antes de tocar.</li>
+</ol>
+<h2 id="plan-de-issues">Plan de issues</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Issue</th>
+<th>Estado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#61</td>
+<td>Benchmark reproducible y baseline</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>#62</td>
+<td>Profiling fino para confirmar dominantes</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>#63</td>
+<td>Reducir iteraciones Jacobi con criterio de convergencia</td>
+<td>✅</td>
+</tr>
+<tr>
+<td>#64</td>
+<td>Paralelizar bucle de cuadrantes con OpenMP</td>
+<td>⚠️ implementada y bit-determinista, criterio 4× <strong>no</strong> cumplido — el cuello de botella se ha desplazado a I/O</td>
+</tr>
+<tr>
+<td>#66</td>
+<td>Precomputar divergencia fuera de Jacobi</td>
+<td>✅ -47% en presión, bit-idéntico, restaura escalado positivo a 8 hilos en #64</td>
+</tr>
+<tr>
+<td>#65</td>
+<td>Validación de no-regresión física</td>
+<td>✅ paralelismo bit-idéntico (sí cumple); umbrales literales vs main no se cumplen porque #63 cambió la numérica intencionadamente — documentado</td>
+</tr>
+<tr>
+<td>#67</td>
+<td>Documentación final de rendimiento</td>
+<td>pendiente</td>
+</tr>
+</tbody>
+</table>
+<p>Orden estricto: no se aborda la siguiente hasta que la anterior esté cerrada
+en <code>main</code>.</p>
+<h2 id="notas-por-issue">Notas por issue</h2>
+<ul>
+<li><a href="optimizacion-61-benchmark-reproducible.html">Optimización — 61 — Benchmark reproducible</a></li>
+<li><a href="optimizacion-62-profiling-por-fase.html">Optimización — 62 — Profiling por fase</a> — confirma presión 70% +
+  advección 28% del coste físico por tick. Resto despreciable.</li>
+<li><a href="optimizacion-63-parada-temprana-jacobi.html">Optimización — 63 — Parada temprana Jacobi</a> — parada temprana
+  (ε=0.5) baja la presión 32% manteniendo BURNING dentro de ±5%.
+  Avg 18 iters/call frente al cap de 30. Hallazgo: respuesta no monótona
+  en ε, regímenes inestables.</li>
+<li><a href="optimizacion-64-paralelismo-openmp.html">Optimización — 64 — Paralelismo OpenMP</a> — implementación
+  bit-determinista, cero regresiones. <strong>Criterio 4× NO cumplido</strong>
+  (mejor: 1.11× con 4 hilos). Diagnóstico: contención L3 (working set
+  N×1.6 MB &gt; 16 MB).</li>
+<li><a href="optimizacion-66-precomputar-divergencia.html">Optimización — 66 — Precomputar divergencia</a> — <code>calcularDivergencia</code>
+  se recomputaba en cada iter Jacobi pese a que la velocidad no cambia.
+  Lift the loop invariant: -46.9 % en presión a 100 ticks (criterio era<blockquote>
+<p>15 %), bit-idéntico al post-#63. Restaura el escalado positivo a 8
+  hilos en #64 — pero el 4× sigue sin alcanzarse porque el cuello de
+  botella se ha trasladado a I/O HTTP, no es ya cómputo.</p>
+</blockquote>
+</li>
+<li><a href="optimizacion-65-validacion-fisica.html">Optimización — 65 — Validación física</a> — el paralelismo per se
+  es bit-idéntico (verificado a 1/4/8/16 hilos). La cumulativa main →
+  milestone tiene un offset temporal de ~10-20 ticks (la propagación
+  está adelantada por la parada temprana de #63), pero patrón
+  cualitativo intacto: misma forma de frente, BURNING+SMOKE total
+  difiere solo 1 %.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

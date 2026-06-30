@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trazado automático A* — coste y datos (#121, M3) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Trazado automático A* — coste y datos (#121, M3)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Cómo se calcula un cortafuegos automático y con qué datos. El A* vive en Python
+(el pathfinding no es física → fuera del motor C++).
+Acompaña a <a href="contrato-de-cortafuegos-auditoria-m2.html">Contrato de Cortafuegos (auditoría M2)</a>.</p>
+</blockquote>
+<h2 id="idea">Idea</h2>
+<p>Dado un <strong>origen y un destino en metros reales</strong>, el A<em> busca el camino que
+minimiza un coste ponderado sobre la rejilla de celdas (1 celda = 1 m, 8 vecinos)
+y devuelve un </em><em>vector de celdas <code>[[x,z],…]</code></em>*, idéntico al del dibujado manual.
+Ese vector se enviará por el flujo de <code>/firebreak</code> (#122) y reutiliza todo lo de
+M2 (pintado, terraformado, estado CORTAFUEGOS, enfriamiento) sin código nuevo.</p>
+<p>La función de coste del <strong>trazado</strong> (a priori) es distinta de la <strong>evaluación</strong>
+(a posteriori, según cómo se comporta el fuego, M4): el A* propone el camino más
+barato; la simulación valida si contiene bien el incendio.</p>
+<h2 id="funcion-de-coste-parametrizable">Función de coste (parametrizable)</h2>
+<p>Coste de entrar en una celda (x,z):</p>
+<pre><code>w_longitud  · paso            (1 recto, √2 diagonal)
+w_pendiente · pendiente(x,z)  (m/m)
+w_biomasa   · fuel(x,z)       (0..1)
+w_especies  · 1{especie penalizada}
+</code></pre>
+<p>Los cuatro pesos (<code>CosteParams</code>) son <strong>ajustables</strong> — la propuesta del TFG pide
+análisis de sensibilidad. Defaults de partida: <code>w_longitud=1</code>, <code>w_pendiente=5</code>,
+<code>w_biomasa=2</code>, <code>w_especies=5</code> (a afinar; "los costes se pueden tocar más tarde").</p>
+<p><strong>Especies penalizadas por defecto</strong> (decidido con el usuario): pino carrasco
+(cian), encina (violeta) y quejigo (naranja) — se preservan los árboles. El
+matorral y el resto NO se penalizan (el matorral es de hecho buen sitio para un
+cortafuegos).</p>
+<h2 id="datos-todos-finos-por-celda">Datos (todos finos, por celda)</h2>
+<ul>
+<li><strong>Pendiente / elevación</strong>: <code>dem.py</code> lee <code>heightmap_16bit.png</code> (1 píxel = 1 m),
+  misma convención de elevación que <code>build_world.py</code> → coincide con <code>world.dat</code>.
+  La pendiente es la magnitud del gradiente (m/m).</li>
+<li><strong>Fuel</strong>: <code>cargar_fuel()</code> parsea <code>world.dat</code> en Python (formato documentado) →
+  matriz por celda. Misma fuente que usa la simulación.</li>
+<li><strong>Especies</strong>: <code>cargar_especies_penal()</code> lee <code>data/especies_map.png</code> (color por
+  especie, lo genera <code>build_world</code>) → máscara booleana de celdas penalizadas. Si
+  el PNG no existe, máscara vacía (el trazado sigue con los otros factores).</li>
+</ul>
+<h2 id="a-implementacion">A* (implementación)</h2>
+<ul>
+<li>Rejilla de 8 vecinos; <code>heapq</code>; heurística = distancia euclídea × <code>w_longitud</code>
+  (cota inferior admisible → A* óptimo).</li>
+<li>Entrada origen/destino en metros (se truncan a celda); salida vector de celdas
+  reconstruido del mapa de predecesores.</li>
+<li>Guard <code>max_expansiones</code> por seguridad (caminos imposibles / enormes → <code>[]</code>).</li>
+<li>Determinista (sin aleatoriedad).</li>
+</ul>
+<h2 id="verificacion">Verificación</h2>
+<p><code>test_pathfinding.py</code>: conecta origen-destino y es contiguo; determinista; <strong>evita
+especies penalizadas y pendiente alta</strong> cuando se suben sus pesos (rodea un muro
+salvo el hueco); carga de datos reales y camino entre puntos cercanos. 8 tests.</p>
+<h2 id="endpoint-post-trazar-122-tipo-a">Endpoint <code>POST /trazar</code> (#122) — tipo A</h2>
+<p><code>/trazar</code> <strong>solo calcula</strong> (separación limpia: trazar = pensar, firebreak =
+aplicar). El cliente envía el vector resultante a <code>POST /firebreak</code>, igual que un
+trazo manual → reutiliza todo el flujo de cortafuegos sin código nuevo.</p>
+<pre><code class="language-jsonc">// request
+{ &quot;origen&quot;:  {&quot;x&quot;: 799, &quot;z&quot;: 696},
+  &quot;destino&quot;: {&quot;x&quot;: 820, &quot;z&quot;: 710},
+  &quot;pesos&quot;:   {&quot;w_pendiente&quot;: 50.0}   // opcional; solo los que se quieran cambiar
+}
+// response
+{ &quot;cells&quot;: [[799,696], [800,697], ...] }   // [] si no hay camino / fuera de rango
+</code></pre>
+<p>El <code>Pathfinder</code> se cachea (los datos se cargan una vez; no depende del motor).</p>
+<h2 id="godot-herramienta-auto-123">Godot — herramienta "Auto" (#123)</h2>
+<p>Herramienta dedicada (botón + tecla <strong>A</strong>), flujo de <strong>2 clicks</strong>:
+1. 1er click izq = <strong>origen</strong> (marcador esfera cian).
+2. 2º click izq = <strong>destino</strong> (marcador naranja) → <code>POST /trazar</code>.
+3. Al recibir el vector, Godot lo pinta <strong>reutilizando el pincel manual</strong>
+   (<code>_pintar_celda_brocha</code>: splat marrón + terraformado) y lo envía a
+   <code>POST /firebreak</code>. Se ve y se aplica igual que un trazo a mano.</p>
+<p>Cambiar de herramienta o resetear limpia la selección y los marcadores. La
+intensidad usa el slider existente.</p>
+<blockquote>
+<p>Nota: se probó un trazado <strong>multipunto (N puntos, orden óptimo TSP)</strong> (#137) pero
+se <strong>revirtió</strong>: el orden óptimo necesita A* entre todos los pares (O(N²)) y
+tardaba demasiado para uso interactivo. Se mantiene el de 2 puntos.</p>
+</blockquote>
+<h2 id="pendiente">Pendiente</h2>
+<ul>
+<li>Afinar los pesos del coste (interactivo / análisis de sensibilidad).</li>
+<li>~~(Opcional) sliders de pesos en el HUD para experimentar en vivo.~~ → hecho en
+  M8, ver <a href="pesos-del-a-en-el-hud-m8.html">Pesos del A en el HUD (M8)</a>.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

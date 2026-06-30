@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>presion.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>presion.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Firma y cifras desactualizadas (revisado 2026-06-27)</div><div class="callout-body"><p>La explicación (divergencia → Jacobi → corrección) sigue válida, pero
+<code>resolverPresion</code> ya no devuelve un grid por valor: opera <strong>in-place sobre
+buffers</strong> y <strong>devuelve el nº de iteraciones</strong>, con <strong>warm-start</strong>, <strong>parada
+temprana</strong> (<code>EPSILON_PRESION</code>; converge en ~7 iter de media, no 30) y
+<strong>divergencia precomputada</strong> (issues #63/#66). Se llama desde
+<code>Simulacion::tick</code>, no desde <code>main.cpp</code>, y no hay flag <code>--iter</code>. Las cifras de
+coste (<code>100×10×100</code>, "~30 ms") son del motor monolítico. Detalle al día en
+<a href="motor-de-fuego-las-operaciones-del-tick-y-como-se-combinan.html">Motor de fuego — las operaciones del tick y cómo se combinan</a> §3.3.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/presion.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code> — paso 2 del tick (<code>g = resolverPresion(g, p.iterJacobi)</code>)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Garantiza que el fluido simulado se comporte como <strong>incompresible</strong>: lo que entra en una celda debe salir. Sin esto, la advección crearía o destruiría material de la nada.</p>
+<p>También es el mecanismo que permite la propagación del fuego. Ver: <a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a></p>
+<hr>
+<h2 id="las-tres-fases-en-orden">Las tres fases en orden</h2>
+<pre><code class="language-cpp">Grid resolverPresion(const Grid&amp; g, int iteraciones = 30) {
+    Grid resultado = iterarJacobi(g, iteraciones);  // fases 1 y 2
+    corregirVelocidad(resultado);                    // fase 3
+    return resultado;
+}
+</code></pre>
+<hr>
+<h2 id="fase-1-calculardivergencia">Fase 1: <code>calcularDivergencia</code></h2>
+<pre><code class="language-cpp">static float calcularDivergencia(const Grid&amp; g, int x, int y, int z)
+</code></pre>
+<p>Mide si una celda "expulsa" o "acumula" fluido:</p>
+<pre><code>div = (vx_derecha − vx_izquierda)
+    + (vy_arriba  − vy_abajo)
+    + (vz_frente  − vz_atras)
+</code></pre>
+<ul>
+<li><code>div &gt; 0</code> → el fluido se expande (sale más de lo que entra)</li>
+<li><code>div &lt; 0</code> → el fluido se comprime (entra más de lo que sale)</li>
+<li><code>div = 0</code> → fluido incompresible ✓</li>
+</ul>
+<p>En los bordes del grid se usa la velocidad propia como vecino (diferencia cero → gradiente cero → condición de contorno de Neumann).</p>
+<hr>
+<h2 id="fase-2-iterarjacobi">Fase 2: <code>iterarJacobi</code></h2>
+<pre><code class="language-cpp">static Grid iterarJacobi(const Grid&amp; g, int iteraciones)
+</code></pre>
+<p>Resuelve la <strong>ecuación de Poisson</strong> <code>∇²p = divergencia</code> iterativamente. No tiene solución directa en 3D, así que el método de Jacobi itera:</p>
+<pre><code>p_nueva = (p_der + p_izq + p_arr + p_abj + p_frt + p_atr − divergencia) / 6
+</code></pre>
+<p>Cada celda actualiza su presión como el promedio de sus 6 vecinas corregido por la divergencia local. Se repite <code>iteraciones</code> veces.</p>
+<h3 id="cuantas-iteraciones">¿Cuántas iteraciones?</h3>
+<table>
+<thead>
+<tr>
+<th><code>--iter</code></th>
+<th>Efecto</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>5 (producción rápida)</td>
+<td>Presión aproximada. El fluido no es perfectamente incompresible pero la simulación es rápida</td>
+</tr>
+<tr>
+<td>20–30 (tests)</td>
+<td>Buena convergencia. Los gradientes de presión se propagan más lejos → mejor propagación lateral del fuego</td>
+</tr>
+<tr>
+<td>100+</td>
+<td>Convergencia casi exacta, coste alto</td>
+</tr>
+</tbody>
+</table>
+<p>Con el grid 100×10×100 y <code>iter=5</code>, cada tick completa en ~30ms. Con <code>iter=30</code>, ~100ms.</p>
+<h3 id="por-que-jacobi-y-no-otro-metodo">Por qué Jacobi y no otro método</h3>
+<p>Jacobi es extremadamente simple y paralelizable. Para visualización en tiempo real, la precisión no necesita ser perfecta — lo importante es que el fluido "parezca" incompresible visualmente, no que lo sea matemáticamente.</p>
+<hr>
+<h2 id="fase-3-corregirvelocidad">Fase 3: <code>corregirVelocidad</code></h2>
+<pre><code class="language-cpp">static void corregirVelocidad(Grid&amp; g)
+</code></pre>
+<p>Resta el gradiente de presión al campo de velocidades:</p>
+<pre><code>v.x -= (p_derecha − p_izquierda) / 2
+v.y -= (p_arriba  − p_abajo)     / 2
+v.z -= (p_frente  − p_atras)     / 2
+</code></pre>
+<p>Esto elimina la componente "compresible" de la velocidad. El resultado es un campo que cumple <code>∇·v ≈ 0</code>.</p>
+<p>Esta corrección también es lo que da velocidad lateral a las celdas FUEL adyacentes a una celda BURNING — el gradiente de presión las empuja hacia la zona de baja presión creada por el gas que sube.</p>
+<hr>
+<h2 id="condicion-de-borde-presion-cero-en-los-bordes-del-grid">Condición de borde: presión cero en los bordes del grid</h2>
+<p>Cuando un vecino está fuera del grid, se usa <code>pressure = 0.0</code> en la iteración Jacobi. Esto es equivalente a una condición de contorno de Dirichlet: la presión en el exterior es cero. El efecto práctico es que el fluido puede "escapar" por los bordes del grid libremente, lo que es correcto para un dominio abierto.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

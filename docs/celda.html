@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>celda.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>celda.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Revisión 2026-06-27 — faltan 2 estados; `fuel` ya no es uniforme</div><div class="callout-body"><p>El enum real tiene <strong>6</strong> estados, no 4: además de <code>AIR/FUEL/BURNING/SMOKE</code>
+están <code>EMPTY</code> (aire inerte en modo superficie, #112) y <code>CORTAFUEGOS</code> (suelo
+despejado, #118) — por eso la nota "AIR sustituye a EMPTY" de abajo quedó a
+medias: <code>EMPTY</code> volvió como estado del aire apagado. Además,
+<code>fuel_coefficient</code> <strong>ya no es <code>1.0</code> en todas las celdas</strong>: se deriva por celda
+de la clasificación hiperespectral (ver <a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a>). El
+struct <code>Celda</code> y la tabla de campos sí están al día.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/celda.h</code>
+<strong>Usado en:</strong> todo el motor — es el tipo base de todas las operaciones</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Define los tipos de datos fundamentales del motor: <code>EstadoCelda</code>, <code>Vec3</code>,
+<code>Vec2</code> y <code>Celda</code>. No contiene ninguna lógica — es puro almacenamiento.
+Todos los sistemas (<code>buoyancy</code>, <code>presion</code>, <code>adveccion</code>, <code>reaccion</code>) reciben
+y devuelven celdas de este tipo.</p>
+<hr>
+<h2 id="estadocelda-los-cuatro-estados-fisicos"><code>EstadoCelda</code> — los cuatro estados físicos</h2>
+<pre><code class="language-cpp">enum class EstadoCelda {
+    AIR,      // por encima de la superficie. Transporta calor y humo. No arde.
+    FUEL,     // celda de superficie con combustible. Ignita a &gt; 100 °C.
+    BURNING,  // ardiendo activamente. Emite calor sostenido.
+    SMOKE     // combustible agotado. Sigue transportando.
+};
+</code></pre>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> AIR sustituye a EMPTY</div><div class="callout-body"><p>El motor anterior tenía <code>EMPTY</code> como cuarto estado (sin material). En el
+rediseño se sustituyó por <code>AIR</code> porque toda celda dentro de un cuadrante
+activo representa volumen físico real — sobre la superficie hay aire, no
+"nada". El cambio no es solo cosmético: AIR participa en advección y
+transporte de humo, EMPTY no debía hacerlo.</p></div></div>
+<p>Transiciones:</p>
+<pre><code>AIR  ──(siempre)──▶  AIR
+FUEL ──(temp &gt; 100 °C)──▶  BURNING ──(reaction → 0)──▶  SMOKE
+</code></pre>
+<p><code>SMOKE</code> no vuelve a <code>BURNING</code>: no hay re-ignición.</p>
+<hr>
+<h2 id="vec3-velocidad-del-fluido"><code>Vec3</code> — velocidad del fluido</h2>
+<pre><code class="language-cpp">struct Vec3 {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+</code></pre>
+<p>Velocidad del fluido en una celda. <strong>Z es el eje vertical</strong> en la convención
+del motor (la flotabilidad escribe en <code>velocity.z</code>). X e Y son horizontales.</p>
+<p>Cuidado con la convención: el SubGrid usa <code>sizeX/sizeY</code> como ejes horizontales
+(world X, world Z) y <code>sizeZ</code> como vertical. La elección histórica viene del
+motor monolítico anterior y se mantuvo en el rediseño para no tocar la
+física. Ver: <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> sección "Mapeo de ejes".</p>
+<hr>
+<h2 id="vec2-vector-horizontal"><code>Vec2</code> — vector horizontal</h2>
+<pre><code class="language-cpp">struct Vec2 {
+    float x = 0.0f;
+    float z = 0.0f;
+};
+</code></pre>
+<p>Solo dos componentes (X, Z) porque se usa para datos 2D del terreno: origen
+del cuadrante en metros mundiales, dirección de pendiente, etc.</p>
+<hr>
+<h2 id="celda-la-unidad-de-simulacion"><code>Celda</code> — la unidad de simulación</h2>
+<pre><code class="language-cpp">struct Celda {
+    Vec3  velocity;
+    float pressure         = 0.0f;
+    float density          = 0.0f;
+    float temperature      = 0.0f;
+    float reaction         = 0.0f;
+    float fuel_coefficient = 1.0f;
+    EstadoCelda state      = EstadoCelda::AIR;
+};
+</code></pre>
+<h3 id="que-hace-cada-campo">Qué hace cada campo</h3>
+<table>
+<thead>
+<tr>
+<th>Campo</th>
+<th>Quién lo escribe</th>
+<th>Quién lo lee</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>velocity</code></td>
+<td><code>buoyancy</code>, <code>presion</code></td>
+<td><code>adveccion</code></td>
+</tr>
+<tr>
+<td><code>pressure</code></td>
+<td><code>presion</code></td>
+<td><code>presion</code></td>
+</tr>
+<tr>
+<td><code>density</code></td>
+<td>inicial, <code>adveccion</code></td>
+<td><code>buoyancy</code></td>
+</tr>
+<tr>
+<td><code>temperature</code></td>
+<td>inicial, <code>adveccion</code>, <code>simulacion::sostener_burning</code></td>
+<td><code>buoyancy</code>, <code>reaccion</code>, <code>simulacion::evaluar_activacion</code></td>
+</tr>
+<tr>
+<td><code>reaction</code></td>
+<td>inicial, <code>reaccion</code></td>
+<td><code>reaccion</code>, <code>adveccion</code></td>
+</tr>
+<tr>
+<td><code>fuel_coefficient</code></td>
+<td><code>simulacion::activar</code> (lee del Cuadrante)</td>
+<td><code>reaccion</code></td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td><code>simulacion::activar</code>, <code>reaccion</code></td>
+<td>todos los sistemas</td>
+</tr>
+</tbody>
+</table>
+<h3 id="semantica-de-reaction-segun-el-estado">Semántica de <code>reaction</code> según el estado</h3>
+<p>El campo <code>reaction</code> (Y ∈ [0, 1]) tiene significado distinto según el estado:</p>
+<table>
+<thead>
+<tr>
+<th>Estado</th>
+<th><code>reaction</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AIR</code></td>
+<td>0.0 — no aplica</td>
+</tr>
+<tr>
+<td><code>FUEL</code></td>
+<td>0.0 — sin combustión activa</td>
+</tr>
+<tr>
+<td><code>BURNING</code></td>
+<td>1.0 al encenderse, decrece hasta 0</td>
+</tr>
+<tr>
+<td><code>SMOKE</code></td>
+<td>0.0 — combustible agotado</td>
+</tr>
+</tbody>
+</table>
+<p>Ver <a href="reaction-campo-fuel-vs-burning.html">reaction-campo-fuel-vs-burning</a>.</p>
+<h3 id="fuel_coefficient-para-el-futuro-mapa-hiperespectral"><code>fuel_coefficient</code> — para el futuro mapa hiperespectral</h3>
+<p>Escala la velocidad de consumo: <code>reaction -= k * dt * fuel_coefficient</code>.</p>
+<ul>
+<li><code>1.0</code> → combustión normal (valor actual de todas las celdas)</li>
+<li><code>0.0</code> → nunca arde (rocas, agua, cortafuegos, celdas fuera del DEM en
+  cuadrantes recortados de borde)</li>
+<li><code>0.3</code> → arde lento (madera húmeda, futuro)</li>
+</ul>
+<p>En el SubGrid del cuadrante, cada celda tiene su <code>fuel_coefficient</code> propio
+(copiado desde el array de superficie del Cuadrante en el momento de
+activar). Cuando se integre la imagen hiperespectral, <code>tools/build_world.py</code>
+escribirá los valores reales por especie en <code>world.dat</code>.</p>
+<hr>
+<h2 id="memoria-por-celda">Memoria por celda</h2>
+<table>
+<thead>
+<tr>
+<th>Pieza</th>
+<th>Bytes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Vec3 velocity</code></td>
+<td>12</td>
+</tr>
+<tr>
+<td>5 floats (<code>pressure</code>, <code>density</code>, <code>temperature</code>, <code>reaction</code>, <code>fuel_coefficient</code>)</td>
+<td>20</td>
+</tr>
+<tr>
+<td><code>EstadoCelda state</code> (enum int)</td>
+<td>4</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>36</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Un SubGrid de 50×50×20 = 50.000 celdas ocupa ~1.8 MB. Durante advección se
+mantienen 3 SubGrids simultáneos (adelante, atrás, resultado): pico de ~5 MB
+por cuadrante activo.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

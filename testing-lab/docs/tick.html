@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>El tick completo — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  .flow {
+    display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem;
+    margin: 1.6rem 0; justify-content: center;
+  }
+  .flow a.box {
+    flex: 1 1 130px; min-width: 120px; text-decoration: none; color: inherit;
+    background: var(--papel); border: 1px solid var(--linea);
+    border-top: 3px solid var(--acento); border-radius: 10px;
+    padding: .8rem .7rem; text-align: center; transition: transform .15s, border-color .15s;
+  }
+  .flow a.box:hover { transform: translateY(-2px); border-color: var(--acento); }
+  .flow .box .num { font-size: .72rem; color: var(--tinta-soft); font-weight: 700; }
+  .flow .box .big { font-weight: 700; font-size: .98rem; display: block; }
+  .flow .box .small { font-size: .78rem; color: var(--tinta-soft); margin-top: .25rem; }
+  .flow .arrow { align-self: center; font-size: 1.4rem; color: var(--tinta-soft); font-weight: 700; }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · todo junto · <a href="index.html">índice</a></p>
+    <h1>El tick completo — la tubería</h1>
+    <p class="sub">Cada operación que has visto por separado no trabaja sola: en
+      cada <strong>tick</strong> de la simulación se ejecutan en orden, y cada una
+      <strong>transforma el campo y se lo pasa a la siguiente</strong>, como un
+      relevo. Aquí se ve el testigo pasar.</p>
+  </header>
+
+  <!-- ════════════════════════════ LA TUBERÍA ══════════════════════════════ -->
+  <h2>El orden del tick</h2>
+  <p>Para cada cuadrante activo, el motor (<code>Simulacion::tick</code>) ejecuta
+    siempre esta secuencia. Pincha en cada fase para ver su página:</p>
+
+  <div class="flow">
+    <a class="box" href="viento.html"><span class="num">1</span><span class="big">viento</span><span class="small">empuje horizontal</span></a>
+    <span class="arrow">→</span>
+    <a class="box" href="buoyancy.html"><span class="num">2</span><span class="big">buoyancy</span><span class="small">empuje vertical (el calor sube)</span></a>
+    <span class="arrow">→</span>
+    <a class="box" href="presion.html"><span class="num">3</span><span class="big">presión</span><span class="small">hace el flujo incompresible</span></a>
+    <span class="arrow">→</span>
+    <a class="box" href="adveccion.html"><span class="num">4</span><span class="big">advección</span><span class="small">transporta el calor</span></a>
+    <span class="arrow">→</span>
+    <a class="box" href="reaccion.html"><span class="num">5</span><span class="big">reacción</span><span class="small">arde, consume, enfría</span></a>
+  </div>
+
+  <!-- ════════════════════════════ LA TIRA ═════════════════════════════════ -->
+  <h2>El testigo pasando, fase a fase</h2>
+  <p>Sobre un foco caliente sostenido, capturamos el grid (temperatura + campo de
+    velocidad) <strong>después de cada operación</strong> de un mismo tick:</p>
+
+  <figure>
+    <img src="../out/tick.png" alt="El grid tras cada fase del tick: inicio, viento, buoyancy, presión, advección, reacción">
+    <figcaption>
+      De izquierda a derecha, el mismo tick tras cada fase. <b>Viento</b> sesga las
+      flechas en horizontal; <b>buoyancy</b> les añade componente vertical donde
+      hay calor; <b>presión</b> reorganiza el campo en una circulación
+      incompresible; <b>advección</b> mueve el calor por ese campo; <b>reacción</b>
+      enfría la periferia y mantiene vivo el foco. Cada panel es la entrada del
+      siguiente.
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/tick.gif" alt="Animación de la tubería: el indicador resalta la fase activa mientras el penacho se desarrolla">
+    <figcaption>Animado, varios ticks: el indicador de arriba resalta la operación
+      activa mientras el penacho se va formando relevo a relevo.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    Un tick no es una operación, es una <strong>cadena</strong>. La buoyancy crea
+    empuje, pero sola no transporta nada; la presión lo convierte en circulación;
+    la advección mueve el calor por esa circulación; la reacción decide qué arde y
+    qué se enfría. <strong>El comportamiento del fuego emerge de las cinco
+    trabajando en orden</strong>, tick tras tick.
+  </div>
+
+  <!-- ════════════════════════════ EL ORDEN ════════════════════════════════ -->
+  <h2>Por qué ese orden</h2>
+  <p>La secuencia no es arbitraria:</p>
+  <ul>
+    <li><strong>Viento antes que buoyancy y presión:</strong> así la fuerza
+      horizontal del viento entra en el balance que la presión va a proyectar a
+      flujo incompresible (si se aplicara después, la presión no lo "vería").</li>
+    <li><strong>Presión antes que advección:</strong> la advección debe transportar
+      por un campo ya <em>incompresible</em>; si no, el calor se acumularía o
+      desaparecería sin sentido físico.</li>
+    <li><strong>Reacción al final:</strong> primero se mueve todo (aire y calor) y
+      luego se decide qué prende, qué se consume y qué se enfría, sobre el estado
+      ya transportado.</li>
+  </ul>
+
+  <div class="nota">
+    <strong>Nota.</strong> Este experimento aislado corre pocos ticks: con un foco
+    fuerte sostenido y sin el resto del bucle (halos, activación de cuadrantes), la
+    buoyancy acumula velocidad y aparece la inestabilidad de la rejilla collocated
+    (la misma del <a href="presion.html#capstone">capstone</a>). El producto real
+    lo evita con el modo superficie. Aquí basta con ver la tubería en marcha.
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/tick.py   # tira por fases + GIF
+testing-lab/.venv/bin/python testing-lab/tests/test_tick.py</code></pre>
+
+  <footer class="pie">
+    Encadena las cinco funciones reales del motor (<code>aplicarViento</code>,
+    <code>aplicarBuoyancy</code>, <code>resolverPresion</code>, <code>advectar</code>,
+    <code>aplicarReaccion</code>) en el orden de <code>Simulacion::tick</code>,
+    volcando el estado tras cada una. Corte 2D de un grid 50×50×20.
+  </footer>
+
+</div>
+</body>
+</html>

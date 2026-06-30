@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pipeline de simulación — un tick · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor C++</p>
+    <h1>Pipeline de simulación — un tick</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="simulacion.html">simulacion</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Parcialmente desactualizado (revisado 2026-06-27)</div><div class="callout-body"><p>Describe el tick <strong>volumétrico</strong> original. El tick real añade, antes de la
+buoyancy, la fase de <strong>viento</strong> (<code>aplicarViento</code>, #74) y, en modo superficie
+(el del producto), el <strong>enfriamiento ambiente</strong> dentro de <code>aplicarReaccion</code>
+(#131) y la <strong>ignición por adyacencia</strong> (<code>propagar_adyacencia</code>, #132); el aire
+por encima de la banda K=1 es <code>EMPTY</code> y el solver lo salta. La versión al día
+de las fases y de cómo se combinan está en
+<a href="motor-de-fuego-las-operaciones-del-tick-y-como-se-combinan.html">Motor de fuego — las operaciones del tick y cómo se combinan</a>.</p></div></div>
+<h2 id="vision-global">Visión global</h2>
+<p>Un tick combina <strong>física por cuadrante</strong> (heredada del motor monolítico
+anterior, sin cambios) con <strong>gestión de cuadrantes activos</strong> (lógica nueva
+del rediseño):</p>
+<pre><code>PARA CADA CUADRANTE ACTIVO:
+  1. aplicarBuoyancy
+  2. resolverPresion
+  3. advectar
+  4. aplicarReaccion
+  5. sostener_burning   ← nuevo: reinyecta calor en BURNING
+
+DESPUÉS:
+  6. propagar_halos          ← nuevo: intercambia bordes
+  7. evaluar_desactivacion   ← nuevo: libera cuadrantes muertos
+  8. evaluar_activacion      ← nuevo: enciende vecinos calientes
+</code></pre>
+<p>Cambiar el orden de los pasos físicos rompe la corrección de la simulación.
+Cambiar el orden 7 → 8 rompe la propagación entre cuadrantes (un vecino
+recién activado se desactivaría inmediatamente). Ver:
+<a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a>.</p>
+<hr>
+<h2 id="paso-1-aplicarbuoyancy-el-calor-sube">Paso 1: <code>aplicarBuoyancy</code> — el calor sube</h2>
+<p><strong>Archivo:</strong> <code>engine/buoyancy.h</code> (sin cambios)</p>
+<p>Modifica <code>velocity.z</code> (el eje vertical en el SubGrid) en función de la
+temperatura y densidad de cada celda BURNING/SMOKE.</p>
+<pre><code>f_buoy = A * temperature - B * density
+velocity.z += f_buoy
+</code></pre>
+<p><code>A = 0.1</code>, <code>B = 0.5</code>. Una celda a 800 °C genera +80 unidades de velocidad
+ascendente.</p>
+<p><strong>Solo aplica a BURNING y SMOKE.</strong> Las celdas FUEL son combustible sólido
+y no tienen dinámica de fluido. Ver: <a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a>.</p>
+<hr>
+<h2 id="paso-2-resolverpresion-incompresibilidad">Paso 2: <code>resolverPresion</code> — incompresibilidad</h2>
+<p><strong>Archivo:</strong> <code>engine/presion.h</code> (sin cambios)</p>
+<p>Garantiza que el fluido se comporte como incompresible: lo que entra a una
+celda debe salir.</p>
+<ol>
+<li><strong>Divergencia</strong> — mide acumulación: <code>div = Δvx + Δvy + Δvz</code>.</li>
+<li><strong>Jacobi (~30 iter)</strong> — resuelve <code>∇²p = div</code>, calculando un campo de
+   presión que cancela la divergencia.</li>
+<li><strong>Corrección</strong> — resta el gradiente de presión a la velocidad:
+   <code>v -= ∇p / 2</code>.</li>
+</ol>
+<p>Detalle de la matemática: <a href="presion.html">presion</a>.</p>
+<hr>
+<h2 id="paso-3-advectar-el-fuego-se-mueve">Paso 3: <code>advectar</code> — el fuego se mueve</h2>
+<p><strong>Archivo:</strong> <code>engine/adveccion.h</code> (sin cambios)</p>
+<p>Transporta <code>temperature</code>, <code>density</code> y <code>reaction</code> a través del campo de
+velocidades limpio que acaba de calcular la presión.</p>
+<ul>
+<li><strong>Semi-Lagrangiano</strong>: para cada celda, busca su origen
+  <code>(x - dt*vx, y - dt*vy, z - dt*vz)</code> e interpola con trilineal.</li>
+<li><strong>MacCormack</strong>: añade un paso de corrección hacia atrás para reducir la
+  difusión numérica y conservar bordes nítidos.</li>
+</ul>
+<p>Detalle: <a href="adveccion.html">adveccion</a>.</p>
+<hr>
+<h2 id="paso-4-aplicarreaccion-combustion">Paso 4: <code>aplicarReaccion</code> — combustión</h2>
+<p><strong>Archivo:</strong> <code>engine/reaccion.h</code> (sin cambios)</p>
+<p>Dos transiciones de estado:</p>
+<ul>
+<li><code>FUEL</code> con <code>temperature &gt; 100 °C</code> → <code>BURNING</code> con <code>reaction = 1.0</code>.</li>
+<li><code>BURNING</code> con <code>reaction &lt;= 0</code> → <code>SMOKE</code>.</li>
+</ul>
+<p>Consumo de combustible:</p>
+<pre><code>reaction -= k * dt * fuel_coefficient
+</code></pre>
+<p><code>k = 0.1</code> por defecto: una celda BURNING dura ~10 ticks. Detalle:
+<a href="reaccion.html">reaccion</a>.</p>
+<hr>
+<h2 id="paso-5-sostener_burning-fuente-de-calor-sostenida-nuevo">Paso 5: <code>sostener_burning</code> — fuente de calor sostenida — NUEVO</h2>
+<p><strong>Archivo:</strong> <code>engine/simulacion.h</code></p>
+<p>Tras la advección (que transporta el calor del foco a sus vecinos y deja la
+celda BURNING enfriada), reinyectamos un mínimo de <code>TEMP_IGNICION = 800 °C</code>
+en cada celda BURNING. Esto modela que una celda ardiendo es un emisor
+<strong>sostenido</strong> de calor mientras tenga combustible:</p>
+<pre><code class="language-cpp">for (Celda&amp; c : grid.cells) {
+    if (c.state == EstadoCelda::BURNING &amp;&amp; c.temperature &lt; 800.0f) {
+        c.temperature = 800.0f;
+    }
+}
+</code></pre>
+<p>Sin este paso, una celda BURNING termina con temperatura cero al cabo de un
+par de ticks porque el campo de velocidades creado por la flotabilidad y
+la advección la drenan completamente.</p>
+<hr>
+<h2 id="paso-6-propagar_halos-intercambio-de-bordes-nuevo">Paso 6: <code>propagar_halos</code> — intercambio de bordes — NUEVO</h2>
+<p><strong>Archivo:</strong> <code>engine/simulacion.h</code></p>
+<p>Para cada par de cuadrantes adyacentes y ambos <code>ACTIVO</code>, copia simétricamente
+la columna borde de uno sobre la columna borde del otro, promediando
+<code>temperature</code>, <code>density</code> y <code>reaction</code>:</p>
+<pre><code>A.right_column ↔ B.left_column
+A.bottom_row   ↔ B.top_row
+(análogo en las 4 direcciones cardinales)
+</code></pre>
+<p>Las diagonales no se tratan a este nivel — la cascada de activación las
+cubre indirectamente cuando los cuadrantes intermedios se activan.</p>
+<p>Es lo que permite que el calor cruce físicamente la frontera de un
+cuadrante y encienda celdas FUEL del vecino en el siguiente tick.</p>
+<hr>
+<h2 id="paso-7-evaluar_desactivacion-libera-cuadrantes-muertos-nuevo">Paso 7: <code>evaluar_desactivacion</code> — libera cuadrantes muertos — NUEVO</h2>
+<p><strong>Archivo:</strong> <code>engine/simulacion.h</code></p>
+<p>Recorre los cuadrantes activos. Un cuadrante se desactiva si <strong>no tiene
+ninguna</strong> celda con:</p>
+<ul>
+<li><code>state == BURNING</code>, <strong>ni</strong></li>
+<li><code>temperature &gt; UMBRAL_ACTIVACION (100 °C)</code>.</li>
+</ul>
+<p>La segunda condición es esencial: un vecino recién activado por el paso 8
+todavía no tiene celdas BURNING — solo tiene FUEL/AIR con calor recibido por
+halos. Si no contara como "actividad", el ciclo activar→desactivar→activar
+pisaría los halos al re-inicializar el grid. Ver:
+<a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a>.</p>
+<p>Al desactivar, se libera el <code>SubGrid.cells</code> (queda como vector vacío) y el
+cuadrante vuelve a <code>INACTIVO</code>.</p>
+<hr>
+<h2 id="paso-8-evaluar_activacion-cascada-de-activacion-nuevo">Paso 8: <code>evaluar_activacion</code> — cascada de activación — NUEVO</h2>
+<p><strong>Archivo:</strong> <code>engine/simulacion.h</code></p>
+<p>Para cada cuadrante activo, mira los <strong>vecinos inactivos</strong> y calcula la
+temperatura máxima en el borde de A que mira hacia el vecino. Si supera
+<code>UMBRAL_ACTIVACION (100 °C)</code>, activa al vecino:</p>
+<pre><code class="language-cpp">for (uint32_t a_id : activos) {
+    for (uint32_t v_id : a.vecinos) {
+        if (v ya activo) continue;
+        if (max_temp en el borde de A facing V &gt; 100°C) {
+            activar(v);
+        }
+    }
+}
+</code></pre>
+<p><code>activar</code> aloca el <code>SubGrid</code>, marca <code>FUEL</code>/<code>AIR</code> según <code>y_superficie</code> y
+<code>fuel_coefficient</code>, y añade el id al set de activos. El cuadrante recién
+activado <strong>no procesa física en este tick</strong> (ya hemos pasado los pasos 1–6),
+pero recibirá halos en el siguiente tick.</p>
+<hr>
+<h2 id="resumen-del-flujo-de-datos-en-un-tick">Resumen del flujo de datos en un tick</h2>
+<pre><code>estado_t (cuadrantes activos: A, B, ...)
+   │
+   ├── física por cuadrante:
+   │     buoyancy → presion → adveccion → reaccion → sostener_burning
+   │
+   ├── propagar_halos              (intercambio simétrico A ↔ B)
+   ├── evaluar_desactivacion       (mata cuadrantes sin actividad)
+   └── evaluar_activacion          (enciende vecinos con borde caliente)
+   │
+estado_t+1 (posiblemente con cuadrantes nuevos activos)
+</code></pre>
+<hr>
+<h2 id="cuentas-de-coste-por-tick">Cuentas de coste por tick</h2>
+<table>
+<thead>
+<tr>
+<th>Pieza</th>
+<th>Coste</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Física por cuadrante (1–4)</td>
+<td>O(50.000) celdas/cuadrante</td>
+</tr>
+<tr>
+<td>sostener_burning</td>
+<td>O(50.000) celdas/cuadrante</td>
+</tr>
+<tr>
+<td>propagar_halos</td>
+<td>O(50 × 20) celdas × pares activos</td>
+</tr>
+<tr>
+<td>evaluar_desactivacion</td>
+<td>O(50.000) por cuadrante activo</td>
+</tr>
+<tr>
+<td>evaluar_activacion</td>
+<td>O(50 × 20) × vecinos × cuadrante activo</td>
+</tr>
+<tr>
+<td><strong>Total típico</strong> (5 activos)</td>
+<td>~250.000 ops por tick</td>
+</tr>
+</tbody>
+</table>
+<p>A 30 fps esto da ~7.5M ops/s en un solo hilo — perfectamente alcanzable
+sin paralelizar.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

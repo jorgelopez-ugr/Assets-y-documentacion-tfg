@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Terraformado de cortafuegos (#119, M2) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Terraformado de cortafuegos (#119, M2)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Cómo y por qué el cortafuegos aplana el terreno, y dónde vive esa lógica.
+Acompaña a <a href="contrato-de-cortafuegos-auditoria-m2.html">Contrato de Cortafuegos (auditoría M2)</a>.</p>
+</blockquote>
+<h2 id="la-decision-el-terraformado-es-visual-y-vive-en-godot">La decisión: el terraformado es visual y vive en Godot</h2>
+<p>La auditoría de #117 dejó una pregunta abierta: el motor tendría que devolver las
+nuevas alturas a Godot, y ese canal no existía. Al diseñar #119 llegamos a una
+conclusión más limpia:</p>
+<p><strong>El terraformado es, en la práctica, puramente visual.</strong> Tras #118 la celda
+pintada ya es <code>CORTAFUEGOS</code> (inerte, <code>fuel=0</code>): no arde ni propaga. Aplanar su
+altura <strong>no cambia nada en la simulación</strong> — la celda ya está muerta para el
+fuego. El valor del aplanado es que el gestor <em>vea</em> una franja despejada y
+nivelada.</p>
+<p>Y hay un hecho de la implementación real que decidió el enfoque: <strong>Godot ya tiene
+la altura fina</strong> del terreno. Construye el relieve directamente de
+<code>heightmap_16bit.png</code> (por píxel, en metros reales) en el vertex shader. El motor,
+en cambio, solo guarda un nivel grueso <code>0–19</code> (~7.7 m/nivel). Devolver alturas
+desde el backend sería <strong>peor</strong> que lo que Godot ya tiene, y crearía un escalón
+feo entre la franja gruesa y el terreno fino de alrededor.</p>
+<p><strong>Conclusión</strong>: el aplanado se hace en Godot, con sus alturas finas. El backend no
+cambia (el motor ya marca <code>CORTAFUEGOS</code> en #118; la API no devuelve alturas).
+Cuando M3 (pathfinding A*) necesite altura/pendiente por celda en el backend, se
+invertirá ahí, hecho a propósito para el coste del trazado.</p>
+<h2 id="regla-de-aplanado-minimo-local-del-trazo">Regla de aplanado: mínimo local del trazo</h2>
+<p>Cada pincelada nivela su huella (brocha de radio <code>RADIO_BROCHA_CAMINO=3</code>) a la
+<strong>altura más baja de esa huella</strong>. La franja se "excava" hacia abajo siguiendo el
+terreno; un cortafuegos sobre un montículo lo rebaja. Cada celda se aplana una sola
+vez (al primer pincel que la toca), así que un trazo largo en pendiente baja en
+escalones locales en vez de a un único nivel global (que dejaría partes del trazo
+enterradas o flotando).</p>
+<h2 id="implementacion">Implementación</h2>
+<p>Todo en <code>godotUI/</code>, sin tocar backend.</p>
+<h3 id="shader-testing-shader-1gdshader">Shader (<code>testing-shader-1.gdshader</code>)</h3>
+<ul>
+<li>Nueva uniform <code>terraform_height</code> (textura R-float): altura normalizada (0–1, el
+  mismo espacio que muestrea <code>heightmap</code>) a la que se nivela cada celda.</li>
+<li>Helper <code>altura_efectiva(uv)</code>: devuelve <code>terraform_height</code> donde
+  <code>path_splat.r</code> marca cortafuegos (<code>step(0.004, cf)</code>), y el <code>heightmap</code> en el
+  resto. Sin rama.</li>
+<li><code>vertex()</code> usa <code>altura_efectiva</code> tanto para el desplazamiento como para las 4
+  muestras vecinas → la normal de la franja queda plana y las paredes del corte se
+  marcan. El resto del terreno, idéntico.</li>
+</ul>
+<h3 id="gdscript-simulaciongd">GDScript (<code>simulacion.gd</code>)</h3>
+<ul>
+<li><code>alturas_norm</code>: array 0–1 (misma rejilla que <code>alturas</code>), el espacio del shader.
+  Se rellena en <code>_cargar_alturas</code> junto a las alturas en metros.</li>
+<li><code>terraform_img</code> / <code>terraform_tex</code> (FORMAT_RF, 1:1 con el grid): creadas en
+  <code>_setup_splat</code> junto al splat, init a 0. Se pasan al shader como
+  <code>terraform_height</code>.</li>
+<li><code>_pintar_camino_en</code>: 1er barrido calcula el mínimo normalizado de la huella;
+  2º barrido pinta el splat (marrón, ya existía) y escribe ese mínimo en
+  <code>terraform_img</code> para cada celda nueva.</li>
+<li><code>_borrar_camino_en</code> y <code>_reset</code>: limpian <code>terraform_img</code> (al dejar de ser
+  cortafuegos el shader vuelve solo al heightmap, pero se limpia por coherencia).</li>
+</ul>
+<h2 id="limitaciones-conocidas-se-itera-si-molestan">Limitaciones conocidas (se itera si molestan)</h2>
+<ul>
+<li><strong>La colisión no se aplana.</strong> <code>static_body_3d.gd</code> construye un
+  <code>HeightMapShape3D</code> desde el PNG; el aplanado es solo visual (shader). El raycast
+  de pintado sigue golpeando la altura original — desajuste menor. Si molesta, se
+  actualiza el <code>HeightMapShape3D</code> de la franja.</li>
+<li><strong>Resolución gruesa del motor.</strong> Sigue habiendo solo 20 niveles verticales en el
+  motor; no afecta al visual (Godot usa altura fina) pero sí importará para el
+  pathfinding de M3.</li>
+<li><strong>Cortafuegos parcial (intensidad &lt; 1)</strong> también se aplana (cualquier
+  <code>path_splat.r &gt; 0</code>). Si se quiere que un raleo parcial no aplane, se sube el
+  umbral del <code>step</code>.</li>
+</ul>
+<h2 id="verificacion">Verificación</h2>
+<p>Visual, en Godot (no automatizable headless): pintar un cortafuegos sobre un
+montículo → la franja se nivela al mínimo local y se ve marrón; borrar/reset la
+restaura. El material marrón (canal R del splat) ya existía de antes, así que</p>
+<h1 id="120-re-mallado-material-queda-cubierto-de-facto-por-este-cambio">120 (re-mallado + material) queda cubierto de facto por este cambio.</h1>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

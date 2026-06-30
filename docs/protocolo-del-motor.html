@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Protocolo del motor — comandos texto stdin/stdout · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor C++</p>
+    <h1>Protocolo del motor — comandos texto stdin/stdout</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Incompleto respecto al código (revisado 2026-06-27)</div><div class="callout-body"><p>Esta ficha solo cubre los 4 comandos originales (<code>IGNITE</code>, <code>TICK</code>, <code>RESET</code>,
+<code>QUIT</code>). El motor real (<code>engine/main.cpp</code>) reconoce además: <code>FIREBREAK_BATCH</code>,
+<code>FIREBREAK_UNDO_BATCH</code>, <code>WIND</code>, <code>SMOKE_VIRTUAL</code>, <code>QUADRANTS</code>, <code>FUEL_MAP</code>,
+<code>STATS</code>, <code>PHYSICS_MODE</code>, <code>SURFACE_LAYERS</code> y <code>MODE</code>, con sus respuestas
+(<code>FIREBREAK_DONE</code>, <code>FIREBREAK_UNDO_DONE</code>, <code>QUADRANTS …</code>, etc.). El enum <code>STATE</code>
+de los <code>CHANGED</code> incluye también <code>CORTAFUEGOS</code> (se emite) y <code>EMPTY</code> (no se
+emite). Contrato de cortafuegos en <a href="contrato-de-cortafuegos-auditoria-m2.html">Contrato de Cortafuegos (auditoría M2)</a>.</p></div></div>
+<h2 id="por-que-texto-y-no-json">Por qué texto y no JSON</h2>
+<p>El motor monolítico anterior se comunicaba con la API enviando el grid
+<strong>completo</strong> (100.000 celdas) serializado como JSON en cada tick. El
+rediseño abandona ese esquema por dos razones:</p>
+<ol>
+<li><strong>Eficiencia</strong>: solo unas pocas miles de celdas cambian entre ticks. JSON
+   completo es órdenes de magnitud más grande de lo necesario.</li>
+<li><strong>Simplicidad</strong>: el motor no necesita parser JSON ni la API necesita
+   serializar todo el estado. Un comando por línea es trivial de leer y
+   escribir en C++ y en Python.</li>
+</ol>
+<p>El protocolo es <strong>texto plano, una orden por línea</strong>:</p>
+<ul>
+<li>API → motor: comandos <code>IGNITE</code>, <code>TICK</code>, <code>RESET</code>, <code>QUIT</code>.</li>
+<li>motor → API: líneas <code>CHANGED ...</code> y <code>TICK_DONE N</code>.</li>
+</ul>
+<hr>
+<h2 id="comandos-api-motor">Comandos API → motor</h2>
+<h3 id="ignite-wx-wz"><code>IGNITE wx wz</code></h3>
+<p>Enciende la celda de superficie en las coordenadas mundiales <code>(wx, wz)</code> en
+metros. Activa el cuadrante correspondiente si aún no lo estaba.</p>
+<pre><code>IGNITE 275 275
+IGNITE 299.5 275.5     ← coordenadas float también funcionan
+</code></pre>
+<p>No genera respuesta inmediata.</p>
+<h3 id="tick"><code>TICK</code></h3>
+<p>Avanza un tick. Procesa todos los cuadrantes activos y emite las celdas que
+hayan cambiado, terminando con <code>TICK_DONE</code>. Ver pipeline:
+<a href="pipeline-de-simulacion.html">Pipeline de Simulación</a>.</p>
+<h3 id="reset"><code>RESET</code></h3>
+<p>Limpia el estado dinámico del motor: desactiva todos los cuadrantes y libera
+sus SubGrids. Tras <code>RESET</code>, el siguiente <code>TICK</code> no genera celdas.</p>
+<h3 id="quit"><code>QUIT</code></h3>
+<p>Cierra el proceso limpiamente. La API lo lanza al apagarse.</p>
+<hr>
+<h2 id="mensajes-motor-api">Mensajes motor → API</h2>
+<h3 id="changed-wx-wy-wz-state-temp"><code>CHANGED wx wy wz STATE TEMP</code></h3>
+<p>Una línea por cada celda que ha cambiado de estado o cuya temperatura ha
+variado más de <code>UMBRAL_TEMP_CHANGED = 0.5 °C</code> respecto al último valor
+emitido para esa celda.</p>
+<pre><code>CHANGED 275 4 275 BURNING 800
+CHANGED 276 4 275 FUEL 25
+CHANGED 275 5 275 AIR 250.5
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Campo</th>
+<th>Tipo</th>
+<th>Rango</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>wx</code></td>
+<td>int</td>
+<td><code>[0, 1598)</code> — metro mundial X</td>
+</tr>
+<tr>
+<td><code>wy</code></td>
+<td>int</td>
+<td><code>[0, 20)</code>  — nivel vertical</td>
+</tr>
+<tr>
+<td><code>wz</code></td>
+<td>int</td>
+<td><code>[0, 1393)</code> — metro mundial Z</td>
+</tr>
+<tr>
+<td><code>STATE</code></td>
+<td>enum</td>
+<td><code>AIR</code>, <code>FUEL</code>, <code>BURNING</code>, <code>SMOKE</code></td>
+</tr>
+<tr>
+<td><code>TEMP</code></td>
+<td>float</td>
+<td>grados Celsius</td>
+</tr>
+</tbody>
+</table>
+<p>El motor mantiene un caché por celda con el último <code>(state, temp)</code> emitido
+y solo escribe <code>CHANGED</code> cuando alguno cambia significativamente.</p>
+<h3 id="tick_done-n"><code>TICK_DONE N</code></h3>
+<p>Cierra el bloque de un <code>TICK</code>. <code>N</code> es el número total de celdas procesadas
+en ese tick (suma de <code>SubGrid::total = 50.000</code> por cada cuadrante activo).</p>
+<pre><code>TICK_DONE 0          ← sin cuadrantes activos (estado inicial o tras RESET)
+TICK_DONE 50000      ← 1 cuadrante activo
+TICK_DONE 100000     ← 2 cuadrantes (el fuego cruzó una frontera)
+TICK_DONE 450000     ← 9 cuadrantes (incendio plenamente extendido)
+</code></pre>
+<p><code>TICK_DONE</code> permite a la API saber dónde acaba la respuesta de un tick sin
+contar líneas ni esperar a un timeout.</p>
+<hr>
+<h2 id="ejemplo-de-sesion">Ejemplo de sesión</h2>
+<pre><code>$ engine/motor data/world.dat
+IGNITE 275 275
+TICK
+CHANGED 250 4 250 FUEL 25
+CHANGED 251 4 250 FUEL 25
+... (≈2.500 líneas de FUEL al activar el cuadrante)
+CHANGED 275 4 275 BURNING 800
+TICK_DONE 50000
+TICK
+CHANGED 274 4 275 BURNING 142
+... (propagación a vecinos)
+TICK_DONE 50000
+RESET
+TICK
+TICK_DONE 0
+QUIT
+</code></pre>
+<hr>
+<h2 id="implementacion">Implementación</h2>
+<ul>
+<li>C++: <code>engine/main.cpp</code>. Parser por <code>getline + istringstream</code>, emisión por
+  <code>std::cout</code> con <code>flush</code> al final de cada <code>TICK_DONE</code>.</li>
+<li>Python: ver <a href="arquitectura-api.html">Arquitectura API</a> sección <code>motor.py</code>. El wrapper
+  <code>motor.tick()</code> lee líneas hasta <code>TICK_DONE</code> y devuelve la lista de
+  cambios parseados.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

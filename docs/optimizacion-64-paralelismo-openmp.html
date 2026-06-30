@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#64` — Paralelismo OpenMP del bucle de cuadrantes · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#64` — Paralelismo OpenMP del bucle de cuadrantes</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="optimizacion-63-parada-temprana-jacobi.html">Optimización — 63 — Parada temprana Jacobi</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Implementación completa y bit-determinista</strong>: el bucle de cuadrantes
+  activos corre en paralelo con OpenMP, mismos resultados (BURNING/SMOKE
+  idénticos al baseline secuencial, snapshot de determinismo numérico OK).</li>
+<li><strong>Cero regresiones en tests</strong>: 44 API + 22+32+18 motor + 3 binarios.</li>
+<li><strong>El criterio cuantitativo del issue (4× speedup a 50k BURNING) NO se
+  cumple</strong>. El mejor resultado es <strong>1.11× wall-clock con 4 hilos</strong>. Con 8
+  o 16 hilos el efecto es neutro o ligeramente negativo.</li>
+<li><strong>Diagnóstico</strong>: contención de cache L3. Cada cuadrante tiene un grid
+  de ~1.6 MB; con 4-8 hilos el conjunto de trabajo simultáneo satura la
+  caché L3 (16 MB en Ryzen 5800H). Sin reducir el tráfico de memoria por
+  iteración Jacobi, añadir hilos castiga más que ayuda.</li>
+<li><strong>Camino para desbloquear</strong>: la issue #66 (precomputar divergencia
+  fuera del bucle Jacobi) recorta ~38 % de operaciones de memoria por
+  iter. Tras #66 hay margen razonable para que 4-8 hilos den el speedup
+  esperado.</li>
+</ul>
+<h2 id="por-que-esta-issue-existe">Por qué esta issue existe</h2>
+<p><a href="optimizacion-62-profiling-por-fase.html">#62</a> confirmó que la fase de
+presión absorbe ~70 % del coste físico por tick, y <a href="optimizacion-63-parada-temprana-jacobi.html">#63</a>
+la bajó un 32 % bajando el promedio de iteraciones Jacobi de 30 a 18. La
+siguiente palanca obvia es paralelizar: el bucle
+<code>for (uint32_t id : activos_)</code> en <code>Simulacion::tick()</code> es trivialmente
+paralelo (los cuadrantes son independientes durante el cuerpo del bucle;
+los halos se propagan después en un paso secuencial).</p>
+<p>Con CPU al ~2 % en bench monohilo en Ryzen 5800H, el paralelismo era el
+candidato grande del milestone.</p>
+<h2 id="diseno">Diseño</h2>
+<h3 id="build-system">Build system</h3>
+<p>OpenMP entra al motor por <code>-fopenmp</code>. Se actualiza:</p>
+<ul>
+<li><code>engine/Makefile</code> (release y debug)</li>
+<li><code>engine/build_motor_debug.sh</code></li>
+<li><code>engine/test_main.sh</code> y <code>engine/test_simulacion.sh</code></li>
+<li><code>api/conftest.py</code> (compilación automática del binario en pytest)</li>
+</ul>
+<p><code>g++</code> activa con <code>-fopenmp</code> tanto el compilador como el linker contra
+<code>libgomp</code>. No se usa CMake porque el repo tiene Makefile minimal — se
+añadiría como deuda técnica si crecen las dependencias.</p>
+<h3 id="cambios-en-simulacion">Cambios en <code>Simulacion</code></h3>
+<p>Cuatro decisiones explícitas:</p>
+<ol>
+<li>
+<p><strong>Copia indexable del set de activos.</strong> <code>std::set&lt;uint32_t&gt;</code> no expone
+   iterador random-access, así que no se puede repartir directamente con
+   <code>#pragma omp parallel for</code>. Una vez por tick, lo volcamos en un
+   <code>std::vector&lt;uint32_t&gt; activos_v(activos_.begin(), activos_.end())</code>.
+   Coste despreciable (un range-copy de ~1000 uint32_t).</p>
+</li>
+<li>
+<p><strong>Buffers replicados por hilo.</strong> Antes:</p>
+</li>
+</ol>
+<p><code>cpp
+   SubGrid buf_adveccion_adelante_;
+   SubGrid buf_adveccion_atras_;
+   SubGrid buf_presion_a_;
+   SubGrid buf_presion_b_;</code></p>
+<p>Ahora:</p>
+<p><code>cpp
+   std::vector&lt;SubGrid&gt; bufs_adveccion_adelante_;
+   std::vector&lt;SubGrid&gt; bufs_adveccion_atras_;
+   std::vector&lt;SubGrid&gt; bufs_presion_a_;
+   std::vector&lt;SubGrid&gt; bufs_presion_b_;</code></p>
+<p>Indexados por <code>omp_get_thread_num()</code>. Inicializados lazy en
+   <code>asegurar_buffers_por_hilo()</code> al inicio de cada <code>tick()</code>. Idempotente:
+   sólo paga el coste de inicializar SubGrids nuevos cuando el max de
+   hilos crece. Esto permite que <code>OMP_NUM_THREADS</code> se cambie entre
+   ejecuciones sin recompilar.</p>
+<ol start="3">
+<li>
+<p><strong>Acumulación atómica del Profile.</strong> El struct compartido se actualiza
+   con <code>#pragma omp atomic update</code> en cada <code>+= ns</code>. Son ~7 atomics por
+   cuadrante, despreciable frente a los 5-50 ms de cómputo físico. La
+   alternativa (per-thread Profile + merge) es más limpia pero añade
+   ceremonia sin ganancia medible.</p>
+</li>
+<li>
+<p><strong>Schedule dinámico, chunk 1.</strong> El coste por cuadrante es variable —
+   Jacobi (<a href="optimizacion-63-parada-temprana-jacobi.html">#63</a>) termina
+   en 5-8 iters lejos del frente y en hasta 30 en el foco activo. Con
+   <code>schedule(static)</code> el hilo que toca el cuadrante caro se vuelve el
+   bottleneck. <code>schedule(dynamic, 1)</code> reasigna sobre la marcha; cada
+   pickup ronda el µs frente a 5-50 ms por cuadrante, así que el
+   overhead de sincronización es trivial.</p>
+</li>
+</ol>
+<h3 id="lo-que-no-se-paraleliza">Lo que NO se paraleliza</h3>
+<ul>
+<li><code>propagar_halos()</code>: lee/escribe entre cuadrantes adyacentes. Tras la
+  barrera implícita del <code>parallel for</code> corre secuencial.</li>
+<li><code>evaluar_desactivacion()</code> y <code>evaluar_activacion()</code>: mutan <code>activos_</code>.</li>
+<li>Los timers chrono de halos/desact/act son mediciones secuenciales (no
+  atómicas).</li>
+</ul>
+<h3 id="determinismo">Determinismo</h3>
+<p>Cada cuadrante en el cuerpo del bucle paralelo:
+- Lee y escribe únicamente SU propio grid (<code>world_.cuadrantes[id].grid</code>).
+- Lee y escribe únicamente SU buffer-de-hilo.
+- No hay ningún read cross-cuadrante hasta <code>propagar_halos()</code>.</p>
+<p>Conclusión: el orden de ejecución de cuadrantes es irrelevante para los
+valores resultantes. La simulación es <strong>bit-determinista</strong> independientemente
+del número de hilos. Verificado:</p>
+<ul>
+<li><code>test_determinismo_numerico_adveccion</code> pasa exactamente igual con 1, 4,
+  8 ó 16 hilos.</li>
+<li>BURNING tick 160 = 57219 en todas las configuraciones.</li>
+<li>SMOKE tick 160 = 262347 en todas las configuraciones.</li>
+</ul>
+<p>Cero divergencia numérica. Esta es la única buena noticia del experimento.</p>
+<h2 id="resultado-experimental">Resultado experimental</h2>
+<p>Bench: 160 ticks, ignición central (799, 696), Ryzen 7 5800H (8 cores
+físicos / 16 hilos lógicos), Linux 6.8, motor compilado con <code>-O2 -fopenmp</code>.</p>
+<h3 id="wall-clock-tick-por-configuracion">Wall-clock <code>/tick</code> por configuración</h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">mediana</th>
+<th style="text-align: right;">p95</th>
+<th style="text-align: right;">max (tick 160)</th>
+<th style="text-align: right;">speedup max</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo (binario post-#64)</td>
+<td style="text-align: right;">426 ms</td>
+<td style="text-align: right;">8262 ms</td>
+<td style="text-align: right;"><strong>10693 ms</strong></td>
+<td style="text-align: right;">1.00×</td>
+</tr>
+<tr>
+<td>4 hilos, dynamic</td>
+<td style="text-align: right;">365 ms</td>
+<td style="text-align: right;">7332 ms</td>
+<td style="text-align: right;"><strong>9665 ms</strong></td>
+<td style="text-align: right;"><strong>1.11×</strong></td>
+</tr>
+<tr>
+<td>8 hilos, dynamic</td>
+<td style="text-align: right;">450 ms</td>
+<td style="text-align: right;">8650 ms</td>
+<td style="text-align: right;">11284 ms</td>
+<td style="text-align: right;">0.95×</td>
+</tr>
+<tr>
+<td>8 hilos, dynamic + <code>OMP_PLACES=cores</code></td>
+<td style="text-align: right;">463 ms</td>
+<td style="text-align: right;">8990 ms</td>
+<td style="text-align: right;">11625 ms</td>
+<td style="text-align: right;">0.92×</td>
+</tr>
+<tr>
+<td>16 hilos, dynamic</td>
+<td style="text-align: right;">(a 100 ticks)</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;">peor que 8</td>
+</tr>
+</tbody>
+</table>
+<h3 id="coste-cpu-acumulado-en-presion-informativo">Coste CPU acumulado en presión (informativo)</h3>
+<p><code>profile_.presion / ticks</code> mide la suma de tiempos de la fase de presión
+<strong>a través de todos los cuadrantes y todos los hilos</strong>. Con 1 hilo
+equivale al wall-clock de la fase. Con N hilos, en condiciones ideales
+debería mantenerse ≈ igual (mismo trabajo total) o crecer ligeramente por
+overhead. Si crece mucho, indica que cada hilo es más lento que la versión
+secuencial → contención.</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th style="text-align: right;">presion CPU sum / tick</th>
+<th style="text-align: right;">factor sobre 1-hilo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1 hilo</td>
+<td style="text-align: right;">244.9 ms</td>
+<td style="text-align: right;">1.0×</td>
+</tr>
+<tr>
+<td>4 hilos</td>
+<td style="text-align: right;">601.6 ms</td>
+<td style="text-align: right;">2.5×</td>
+</tr>
+<tr>
+<td>8 hilos</td>
+<td style="text-align: right;">3391.6 ms</td>
+<td style="text-align: right;">13.8×</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cada hilo en la versión 8-thread es ~14× más lento por cuadrante que en
+la versión 1-thread.</strong> Esto no es overhead OpenMP — es el kernel
+físico ejecutándose más despacio porque sus accesos a memoria caen fuera
+de caché.</p>
+<h3 id="calculo-del-working-set-y-diagnostico">Cálculo del working set y diagnóstico</h3>
+<p>Cada <code>Cuadrante</code> activo aloca un <code>SubGrid</code> de:</p>
+<pre><code>50 (CELDAS_QUAD_X) × 50 (CELDAS_QUAD_Z) × 20 (NIVELES_Y) = 50000 celdas
+</code></pre>
+<p>Con <code>sizeof(Celda) ≈ 32-40 bytes</code> (varios floats por celda), el grid de
+un cuadrante son <strong>~1.6 MB</strong>. Si N hilos procesan N cuadrantes en
+paralelo, el conjunto de trabajo simultáneo es N × 1.6 MB:</p>
+<table>
+<thead>
+<tr>
+<th>Hilos</th>
+<th style="text-align: right;">Working set</th>
+<th>vs L3 (16 MB)</th>
+<th>vs L2 sumada (4 MB)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td style="text-align: right;">1.6 MB</td>
+<td>10 %</td>
+<td>40 %</td>
+</tr>
+<tr>
+<td>4</td>
+<td style="text-align: right;">6.4 MB</td>
+<td>40 %</td>
+<td>160 %</td>
+</tr>
+<tr>
+<td>8</td>
+<td style="text-align: right;">12.8 MB</td>
+<td>80 %</td>
+<td>320 %</td>
+</tr>
+<tr>
+<td>16</td>
+<td style="text-align: right;">25.6 MB</td>
+<td><strong>160 %</strong></td>
+<td>640 %</td>
+</tr>
+</tbody>
+</table>
+<p>A 8-16 hilos saturamos L3. Cada thread tira líneas de caché a sus vecinos
+y se generan misses constantes en la pasada Jacobi (que toca todo el grid
+30 veces por cuadrante por tick — y lee los vecinos en 6 direcciones por
+celda).</p>
+<p>Verificado por descarte:
+- ¿Overhead de OpenMP per se? No. <code>OMP_NUM_THREADS=1</code> con el binario
+  paralelo da los mismos números que el binario secuencial pre-#64.
+- ¿Contención atómica del Profile? No. Sólo 7 atómicos por cuadrante,
+  ~700 cuadrantes × 100 ticks = 70k ops, irrelevante frente a horas-CPU
+  de Jacobi.
+- ¿SMT (hyper-threading)? No. Pinning a cores físicos con
+  <code>OMP_PLACES=cores OMP_PROC_BIND=close</code> no cambia nada respecto a 8
+  hilos sin pinning.</p>
+<p>Es contención de memoria pura.</p>
+<h2 id="por-que-falla-el-criterio-del-4-y-que-lo-desbloquea">Por qué falla el criterio del 4× y qué lo desbloquea</h2>
+<p>El issue exige 4× a 50 k BURNING. Para acercarse hace falta o bien:</p>
+<ol>
+<li>
+<p><strong>Reducir el working set por cuadrante.</strong> Cambiar <code>Celda</code> a una
+   estructura de arrays (SoA) en lugar de array-of-structs (AoS) — sólo
+   los campos <code>pressure</code> y <code>velocity</code> se tocan en Jacobi, las
+   reservaciones, fuel_coefficient, etc. se podrían poner en arrays
+   distintos para mejorar la densidad de cache. Es una refactor invasiva.</p>
+</li>
+<li>
+<p><strong>Reducir las operaciones de memoria por iteración.</strong> <a href="optimizacion-paralelismo-y-coste.html">Issue #66</a>
+   ya lo apunta: <code>calcularDivergencia(g, x, y, z)</code> se llama dentro del
+   bucle Jacobi pese a que la velocidad NO cambia durante Jacobi. Lift
+   the loop invariant: precomputar el campo de divergencia una sola vez
+   por llamada a <code>resolverPresion</code>. Eso elimina ~6 lecturas de
+   <code>velocity</code> por celda por iter. Con ε=0.5 (~18 iters/call), son
+   18 × 50000 × 6 = <strong>5.4 millones de lecturas de velocidad por
+   cuadrante por tick</strong> que se sustituyen por una sola lectura del
+   array de divergencia precomputada. <strong>Reduce el tráfico de memoria
+   un ~38 %</strong> en el kernel Jacobi.</p>
+</li>
+</ol>
+<p><strong>Tras #66 el working set efectivo cae</strong> porque cada hilo deja de
+   sacudir el campo de velocidad continuamente. Es la condición previa
+   más probable para que la paralelización pague.</p>
+<ol start="3">
+<li><strong>Multigrid o SOR</strong>: Jacobi es lento. Cambiar a Successive
+   Over-Relaxation (ω≈1.7) o un solver multigrid converge
+   dramáticamente más rápido. Fuera del scope del milestone.</li>
+</ol>
+<h2 id="decision">Decisión</h2>
+<p>Implementación <strong>mantenida en main</strong>: el código paralelo es correcto,
+bit-determinista, sin regresiones. Aporta una mejora modesta (1.11× a
+4 hilos en peak) sin riesgo. Documentado por qué no se llega al 4×.</p>
+<p><strong>Próximo paso del milestone</strong>: priorizar #66 (precomputar divergencia)
+antes de #65 (validación física). Tras #66 se rebench este #64 con la
+nueva versión y se actualiza este documento.</p>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/Makefile</code> — <code>-fopenmp</code> en <code>CXXFLAGS</code>.</li>
+<li><code>engine/build_motor_debug.sh</code> — <code>-fopenmp</code>.</li>
+<li><code>engine/test_main.sh</code> y <code>engine/test_simulacion.sh</code> — <code>-fopenmp</code>.</li>
+<li><code>api/conftest.py</code> — <code>-fopenmp</code> en la compilación automática.</li>
+<li><code>engine/simulacion.h</code>:</li>
+<li><code>#include &lt;omp.h&gt;</code>.</li>
+<li>4 buffers únicos → 4 <code>std::vector&lt;SubGrid&gt;</code> indexados por hilo.</li>
+<li>Constructor inicializa para 1 hilo; resto lazy.</li>
+<li><code>asegurar_buffers_por_hilo()</code> ajusta lazy según <code>omp_get_max_threads()</code>.</li>
+<li>Bucle de <code>tick()</code> envuelto en <code>#pragma omp parallel for schedule(dynamic, 1)</code>.</li>
+<li>Variables <code>ns_*</code> locales por iter, atomic update al final del cuerpo.</li>
+<li>Halos/activación/desactivación quedan secuenciales tras la barrera.</li>
+</ul>
+<h2 id="tests">Tests</h2>
+<ul>
+<li>44/44 API.</li>
+<li><code>engine/test_main.sh</code> 22 OK (incluido <code>STATS</code> con <code>presion_iters</code>/<code>presion_calls</code>).</li>
+<li><code>engine/test_simulacion.sh</code> 32 OK (incluido <code>test_determinismo_numerico_adveccion</code>).</li>
+<li><code>engine/test_world_loader.sh</code> 18 OK.</li>
+<li><code>engine/test_buoyancy</code>, <code>test_reaccion</code>, <code>test_serializar</code> OK.</li>
+</ul>
+<p>Cero regresiones bit-a-bit.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

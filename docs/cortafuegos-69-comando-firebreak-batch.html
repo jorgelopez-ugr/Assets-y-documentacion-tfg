@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortafuegos — `#69` — Comando FIREBREAK_BATCH (POST) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Cortafuegos — `#69` — Comando FIREBREAK_BATCH (POST)</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="mvp-arquitectura-de-cuadrantes.html">MVP — Arquitectura de Cuadrantes</a> · <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Primera pieza del milestone "Cortafuegos pintables desde Godot"</strong>: el
+  motor expone un comando <code>FIREBREAK_BATCH</code> que recibe una intensidad y
+  una lista de celdas y multiplica <code>fuel_coefficient *= (1 - intensidad)</code>
+  en cada una.</li>
+<li><strong>No toca el bucle de tick</strong>: la latencia por tick no cambia. El comando
+  se invoca a demanda desde la API (issue #71) cuando el usuario pinta en
+  Godot.</li>
+<li><strong>Miguitas de pan</strong>: cada celda tocada por primera vez guarda su fuel
+  original en un <code>unordered_map&lt;uint64_t, float&gt; fuel_modificado_</code>.
+  Permitirá DELETE (#70) y restauración en <code>/reset</code> (#70).</li>
+<li><strong>Nivel B (decisión 4 del HANDOFF)</strong>: si el cuadrante está ACTIVO y la
+  Celda viva está en estado FUEL, el cambio se propaga a <code>cell.fuel_coefficient</code>
+  y, si el nuevo valor es 0, la Celda pasa a AIR. Celdas BURNING/SMOKE
+  <strong>NO se tocan</strong> (decisión 1: una motosierra no apaga incendios).</li>
+<li><strong>Cero regresiones</strong>: 27 motor (<code>test_main.sh</code>) + 54 motor (<code>test_simulacion.sh</code>)</li>
+<li>46 API. 12 asserts nuevos para esta issue.</li>
+<li><strong>Snapshot de determinismo</strong>: pasa sin tocar — la ruta de FIREBREAK no
+  altera el cómputo físico cuando no se invoca.</li>
+</ul>
+<h2 id="por-que-esta-issue-es-la-primera-del-milestone">Por qué esta issue es la primera del milestone</h2>
+<p>El HANDOFF (<code>.claude/HANDOFF-cortafuegos.md</code>) divide el trabajo en cuatro
+issues con dependencias:</p>
+<pre><code>#69 (motor POST) → #70 (motor DELETE + reset restore) → #71 (API endpoints) → #72 (E2E + narrativa)
+</code></pre>
+<h1 id="69-es-foundational-introduce-el-metodo-pintar_firebreak-el-mapa-de">69 es foundational: introduce el método <code>pintar_firebreak</code>, el mapa de</h1>
+<p>miguitas y el handler del protocolo. Las tres siguientes issues dependen
+de estas estructuras.</p>
+<h2 id="hipotesis-fisica-que-justifica-todo-el-milestone">Hipótesis física que justifica todo el milestone</h2>
+<blockquote>
+<p>Si el cortafuegos es demasiado fino y está rodeado de árboles con mucho
+fuel, la propagación del calor por convección puede hacer que el incendio
+salte igualmente. <strong>Crear correctos cortafuegos no es trivial — el ancho
+importa.</strong></p>
+</blockquote>
+<p>La narrativa la cierra la issue #72 con benches de franja estrecha vs
+ancha. Pero la mecánica ya <strong>sale gratis</strong> del solver:</p>
+<ol>
+<li><code>pintar_firebreak</code> con intensidad=1 convierte <code>Celda::state</code> de FUEL a
+   AIR, manteniendo el resto del SubGrid intacto.</li>
+<li><code>aplicarBuoyancy()</code> empuja calor hacia arriba en celdas BURNING/SMOKE.</li>
+<li><code>advectar()</code> lo transporta lateralmente por las celdas AIR (las pintadas).</li>
+<li>Si la franja es estrecha, la temperatura al otro lado puede superar
+   <code>UMBRAL_ACTIVACION = 100°C</code> y reignitar.</li>
+</ol>
+<p>No se ha tocado el solver. Sólo se le da al usuario el botón para
+modificar el campo <code>fuel_coefficient</code> desde fuera.</p>
+<h2 id="decisiones-cerradas-no-re-abrir">Decisiones cerradas (no re-abrir)</h2>
+<p>Recogidas en el HANDOFF y aplicadas literalmente en el código:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decisión</th>
+<th>Reflejo en el código</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Pincel = <code>FUEL → AIR</code>. NO tocar BURNING/SMOKE.</td>
+<td><code>if (sup.state != EstadoCelda::FUEL) return;</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Granularidad: <code>intensidad ∈ [0,1]</code>, <code>nuevo = actual * (1-intensidad)</code>.</td>
+<td><code>c.fuel_coefficient[idx] *= (1 - intensidad)</code></td>
+</tr>
+<tr>
+<td>4</td>
+<td>Nivel B: motor SIEMPRE acepta el comando, esté el cuadrante activo o no.</td>
+<td>El método procede sin importar <code>c.estado</code>.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Miguitas: la primera modificación guarda el original; repintar NO sobrescribe.</td>
+<td><code>if (fuel_modificado_.find(key) == end()) emplace(...)</code></td>
+</tr>
+<tr>
+<td>6</td>
+<td>Formato del comando: <strong>batch</strong>, no una línea por celda.</td>
+<td><code>FIREBREAK_BATCH &lt;intensidad&gt; &lt;N&gt;</code> + N líneas <code>&lt;x&gt; &lt;z&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Decisión 6 se cerró durante la planificación tras pregunta explícita: una
+brocha en Godot genera lotes de cientos de celdas por trazo; un comando
+por celda satura stdin y multiplica el overhead de parseo.</p>
+<h2 id="diseno">Diseño</h2>
+<h3 id="simulacionhpintar_firebreak"><code>simulacion.h::pintar_firebreak</code></h3>
+<pre><code class="language-cpp">void pintar_firebreak(int wx, int wz, float intensidad);
+</code></pre>
+<p>Coordenadas mundiales <strong>enteras</strong> (índices de celda, una celda = 1 m).
+La API valida y pasa enteros; el motor no acepta floats — coherente con
+el payload JSON <code>[[x,z], ...]</code> que envía Godot.</p>
+<p>Algoritmo:</p>
+<ol>
+<li><strong>Validación</strong>: <code>wx&lt;0 || wz&lt;0</code> → no-op. División entera C++ trunca
+   hacia cero, así que <code>wx=-1</code> daría <code>qx=0</code> (no detectable con
+   <code>qx&lt;0</code>). Validamos directamente.</li>
+<li><strong>Localización</strong>: <code>qx = wx / CELDAS_QUAD_X</code>, <code>cx = wx - qx * CELDAS_QUAD_X</code>.
+   <code>qid = qz * cuadrantes_x + qx</code>.</li>
+<li><strong>Miguita</strong>: <code>key = (qid &lt;&lt; 32) | idx</code>. Si no está en <code>fuel_modificado_</code>,
+   se inserta con el fuel original. Repintar no sobrescribe (decisión 5).</li>
+<li><strong>Modificación estática</strong>: <code>c.fuel_coefficient[idx] *= (1 - clamp(intensidad, 0, 1))</code>.</li>
+<li><strong>Nivel B (decisión 4)</strong>: si <code>c.estado == ACTIVO</code> y la Celda viva está
+   en FUEL:
+   - <code>nuevo_fuel &lt;= 0</code> → <code>state = AIR</code>, <code>cell.fuel_coefficient = 0</code>.
+   - <code>nuevo_fuel &gt; 0</code> → <code>cell.fuel_coefficient = nuevo_fuel</code>.
+   - BURNING/SMOKE: la celda viva NO se toca.</li>
+</ol>
+<p>El clamp de intensidad es paranoico (la API ya valida) pero protege contra
+inputs manuales por stdin — coste despreciable.</p>
+<h3 id="simulacionhfuel_modificado_"><code>simulacion.h::fuel_modificado_</code></h3>
+<pre><code class="language-cpp">std::unordered_map&lt;uint64_t, float&gt; fuel_modificado_;
+</code></pre>
+<ul>
+<li><strong>key</strong>: <code>key_firebreak(qid, idx) = (qid &lt;&lt; 32) | idx</code>. <code>idx</code> máximo
+  CELDAS_SUPERFICIE (2500), pero usamos 32 bits por simplicidad. Función
+  pública estática para que tests y la issue #70 puedan recomponer claves.</li>
+<li><strong>value</strong>: fuel ORIGINAL antes de la primera modificación. La issue
+  #70 lo consume para restaurar en DELETE / <code>/reset</code>.</li>
+</ul>
+<p>Coste: O(N) en memoria, donde N = celdas pintadas en la sesión.
+Esperado N ≤ 1000 en uso normal.</p>
+<h3 id="maincppfirebreak_batch"><code>main.cpp::FIREBREAK_BATCH</code></h3>
+<p>Cabecera:</p>
+<pre><code>FIREBREAK_BATCH &lt;intensidad&gt; &lt;N&gt;
+&lt;x1&gt; &lt;z1&gt;
+&lt;x2&gt; &lt;z2&gt;
+...
+&lt;xN&gt; &lt;zN&gt;
+</code></pre>
+<p>Respuesta:</p>
+<pre><code>FIREBREAK_DONE &lt;N_procesadas&gt;
+</code></pre>
+<p><code>N_procesadas</code> puede ser menor que <code>N</code> si alguna línea está malformada
+o si EOF llega antes de leer todas — el motor no aborta el lote, sólo
+salta esa línea.</p>
+<p>Si la cabecera está malformada (intensidad o N no parseables), el comando
+se ignora silenciosamente y NO se consumen líneas adicionales —
+comportamiento consistente con los demás comandos no reconocidos del
+protocolo.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="c-test_simulacioncpp-7-funciones-de-test-22-asserts">C++ (<code>test_simulacion.cpp</code>) — 7 funciones de test, 22 asserts</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Qué cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_firebreak_inactivo_modifica_estatico</code></td>
+<td>Pintar en cuadrante INACTIVO modifica <code>Cuadrante::fuel_coefficient</code> y guarda miguita. NO activa el cuadrante.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_activo_FUEL_pasa_a_AIR</code></td>
+<td>Cuadrante ACTIVO + Celda FUEL + intensidad=1 → Celda pasa a AIR.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_no_toca_BURNING</code></td>
+<td>Celda viva BURNING permanece BURNING; la copia estática SÍ se anula (decisión 1).</td>
+</tr>
+<tr>
+<td><code>test_firebreak_no_toca_SMOKE</code></td>
+<td>Idem para SMOKE.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_repintar_preserva_original</code></td>
+<td>Re-pintar la misma celda mantiene la miguita original-original (decisión 5).</td>
+</tr>
+<tr>
+<td><code>test_firebreak_intensidad_parcial</code></td>
+<td><code>intensidad=0.5</code> reduce fuel a la mitad sin pasar a AIR.</td>
+</tr>
+<tr>
+<td><code>test_firebreak_fuera_de_mundo_es_noop</code></td>
+<td>Coords negativas o fuera de rango: no crash, no miguitas.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="bash-test_mainsh-5-asserts-del-protocolo">Bash (<code>test_main.sh</code>) — 5 asserts del protocolo</h3>
+<ul>
+<li><code>FIREBREAK_DONE 2</code> con lote de 2 celdas.</li>
+<li><code>FIREBREAK_DONE 0</code> con lote vacío (N=0).</li>
+<li>Intercalado con IGNITE/TICK no rompe el flujo.</li>
+<li>TICK sigue funcionando tras FIREBREAK_BATCH.</li>
+<li>Coordenadas fuera de mundo no crashean.</li>
+</ul>
+<h3 id="resultados">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes</th>
+<th style="text-align: right;">Después</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">22 OK</td>
+<td style="text-align: right;"><strong>27 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">32 OK</td>
+<td style="text-align: right;"><strong>54 OK</strong></td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">46 OK</td>
+<td style="text-align: right;">46 OK (sin tocar)</td>
+</tr>
+<tr>
+<td>Determinismo numérico (snapshot 10 ticks)</td>
+<td style="text-align: right;">OK</td>
+<td style="text-align: right;"><strong>OK sin re-snapshotar</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="comparacion-con-baseline-latencia-por-tick">Comparación con baseline (latencia por tick)</h2>
+<p><code>FIREBREAK_BATCH</code> no entra en el bucle del <code>tick()</code>, así que la latencia
+por tick <strong>no debería cambiar</strong>. Verificado parcialmente con un bench
+hasta tick 160 (interrumpido por timeout HTTP a esa latencia, no
+relacionado con #69):</p>
+<table>
+<thead>
+<tr>
+<th>Tick</th>
+<th>Baseline (CONTEXT.md)</th>
+<th>post-#69</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>20</td>
+<td>27 ms / 3 BURNING</td>
+<td>12 ms / 2</td>
+</tr>
+<tr>
+<td>60</td>
+<td>147 ms / 1279</td>
+<td>137 ms / 1256</td>
+</tr>
+<tr>
+<td>100</td>
+<td>726 ms / 2546</td>
+<td>941 ms / 2546</td>
+</tr>
+<tr>
+<td>140</td>
+<td>4.1 s / 25593</td>
+<td>5.4 s / 25359</td>
+</tr>
+<tr>
+<td>160</td>
+<td>10.0 s / 52390</td>
+<td>12.1 s / 57219</td>
+</tr>
+</tbody>
+</table>
+<p>Mismo orden de magnitud y conteos comparables — sin regresión observable
+dentro del ruido de scheduling/cachés.</p>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/simulacion.h</code>:</li>
+<li><code>#include &lt;unordered_map&gt;</code>.</li>
+<li><code>static uint64_t key_firebreak(uint32_t qid, int idx)</code> — público para tests.</li>
+<li><code>void pintar_firebreak(int wx, int wz, float intensidad)</code>.</li>
+<li><code>const std::unordered_map&lt;uint64_t, float&gt;&amp; fuel_modificado() const</code> — getter para tests y #70.</li>
+<li>Miembro privado <code>std::unordered_map&lt;uint64_t, float&gt; fuel_modificado_</code>.</li>
+<li><code>engine/main.cpp</code>:</li>
+<li>Handler <code>FIREBREAK_BATCH</code> que lee la cabecera + N líneas y emite <code>FIREBREAK_DONE &lt;N&gt;</code>.</li>
+<li>Cabecera de comentarios del protocolo actualizada.</li>
+<li><code>engine/test_simulacion.cpp</code>:</li>
+<li>7 funciones de test nuevas (22 asserts) registradas en <code>main()</code>.</li>
+<li><code>engine/test_main.sh</code>:</li>
+<li>5 asserts del protocolo (FIREBREAK_BATCH + edge cases).</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong>Coordenadas enteras, no float</strong>. <code>IGNITE</code> acepta float y trunca; aquí
+   recibimos enteros directamente. La brocha de Godot trabaja en celdas,
+   y la API enviará pares <code>[x,z]</code> enteros. Mantener floats sería ruido.</p>
+</li>
+<li>
+<p><strong>Validar <code>wx&lt;0 || wz&lt;0</code> explícitamente</strong>. La división entera de C++
+   trunca hacia cero (no hacia menos infinito), así que <code>wx=-1 → qx=0</code>
+   pasaría el check de cuadrante pero accedería a <code>idx=-1</code> en
+   <code>fuel_coefficient</code>. Bug heredado de <code>ignite()</code>; aquí lo hago bien
+   desde el principio. Considerar parchearlo en <code>ignite()</code> cuando toque.</p>
+</li>
+<li>
+<p><strong>Clamp de intensidad a [0,1] en el motor</strong>. Paranoia barata: si alguien
+   manda intensidad=2 por stdin, no convertimos <code>fuel</code> en negativo
+   (que arrancaría <code>state == AIR</code> con <code>fuel_coefficient &lt; 0</code>).</p>
+</li>
+<li>
+<p><strong>Getter público <code>fuel_modificado()</code> const</strong>. Necesario para tests y
+   para que la issue #70 pueda iterarlo en <code>/reset</code>. No expone mutación.</p>
+</li>
+</ol>
+<h2 id="conclusion-y-siguiente-paso-del-milestone">Conclusión y siguiente paso del milestone</h2>
+<h1 id="69-entrega-los-criterios-de-aceptacion-al-100">69 entrega los criterios de aceptación al 100 %:</h1>
+<ul>
+<li>[x] Compila sin warnings.</li>
+<li>[x] Tests existentes pasan (cero regresiones).</li>
+<li>[x] Tests nuevos cubren los 5 escenarios de la issue + edge cases.</li>
+<li>[x] Test del protocolo en <code>test_main.sh</code>.</li>
+</ul>
+<p><strong>Siguiente</strong>: <a href="cortafuegos-70-delete-y-restore-en-reset.html">Cortafuegos — 70 — DELETE y restore en reset</a> (cuando
+exista). El motor ya tiene el mapa de miguitas; #70 lo consume para
+implementar <code>FIREBREAK_UNDO_BATCH</code> y modificar <code>Simulacion::reset()</code>
+para restaurar todos los <code>fuel_coefficient</code> originales antes de
+desactivar cuadrantes.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

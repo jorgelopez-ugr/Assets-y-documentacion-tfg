@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hallazgo: el `state` SMOKE no se propaga verticalmente en el motor · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Hallazgo: el `state` SMOKE no se propaga verticalmente en el motor</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a></p>
+<p><strong>Milestone afectado:</strong> Integración Godot-Motor (#79, #92)
+<strong>Archivos relacionados:</strong> <code>engine/adveccion.h</code> · <code>engine/reaccion.h</code> · <code>engine/simulacion.h</code></p>
+<blockquote>
+<p>No es estrictamente un <em>bug</em>, sino una <strong>limitación arquitectónica
+del solver</strong> que descubrimos al intentar visualizar la columna
+de humo. Documentado porque marcó dos decisiones del milestone
+(#92 y #94) y la respuesta directa de Claude a la sospecha del
+usuario fue <strong>errónea inicialmente</strong> — propaga aprendizaje.</p>
+</blockquote>
+<hr>
+<h2 id="el-sintoma">El síntoma</h2>
+<p>Al implementar <code>_aplicar_diffs()</code> en Godot tras el refactor a
+MultiMesh (#79), el usuario reportó:</p>
+<blockquote>
+<p>"Sigue sin existir columna de humo. El fuego ahora se pinta un
+ poco por encima del suelo. ¿Podemos añadir debug a ver porque
+ no existe columna como tal? A ver si el motor no produce o esque
+ godot lo siega o alomejor es la API traduciendo incorrectamente."</p>
+</blockquote>
+<p>Yo (Claude) afirmé inicialmente que el motor sí calculaba la
+columna y que Godot la estaba ignorando aplastando la coordenada Y.
+<strong>Estaba parcialmente equivocado</strong>.</p>
+<p>El usuario añadió debug en <code>_aplicar_diffs</code> y descubrió que:</p>
+<pre><code>[DBG 55] diffs(475): BURNING=252 SMOKE=223
+  y_BURN[min=10 max=12 avg=11.0]
+  y_SMOKE[min=10 max=12 avg=11.0]
+</code></pre>
+<p><code>y_SMOKE</code> y <code>y_BURN</code> están <strong>en el mismo rango</strong>: ambas se quedan
+en la fila <code>y_superficie</code> del subgrid (~nivel 11). No hay
+estado SMOKE por encima del suelo.</p>
+<hr>
+<h2 id="por-que-pasa-lo-que-el-solver-hace">Por qué pasa (lo que el solver hace)</h2>
+<p>Tras releer <code>engine/adveccion.h</code> y <code>engine/reaccion.h</code>:</p>
+<ol>
+<li>
+<p><strong><code>aplicarBuoyancy()</code> (engine/buoyancy.h)</strong>:
+   <code>cpp
+   if (c.state != BURNING &amp;&amp; c.state != SMOKE) continue;
+   float fuerza = A * c.temperature - B * c.density;
+   c.velocity.z += fuerza;</code>
+   Aplica empuje vertical sólo a celdas BURNING o SMOKE. Para celdas
+   AIR (la mayoría) no hace nada.</p>
+</li>
+<li>
+<p><strong><code>advectar()</code> (engine/adveccion.h)</strong> semi-Lagrangiano MacCormack:
+   <code>cpp
+   dst.temperature = semiLagrangiano(g, g, x, y, z, dt, getTemp);
+   dst.density     = semiLagrangiano(g, g, x, y, z, dt, getDensity);
+   dst.reaction    = semiLagrangiano(g, g, x, y, z, dt, getReaction);</code>
+   Transporta <strong>temperature, density, reaction</strong> entre celdas
+   adyacentes. <strong>NO transporta <code>state</code></strong>.</p>
+</li>
+<li>
+<p><strong><code>aplicarReaccion()</code> (engine/reaccion.h)</strong> — el único lugar
+   donde <code>state</code> cambia:
+   <code>cpp
+   if (c.state == FUEL &amp;&amp; c.temperature &gt; UMBRAL_IGNICION) {
+       c.state = BURNING; ...
+   }
+   if (c.state == BURNING &amp;&amp; c.reaction &lt;= 0) {
+       c.state = SMOKE;
+   }</code>
+   Sólo dos transiciones: FUEL→BURNING y BURNING→SMOKE. <strong>No existe
+   AIR→SMOKE</strong> por mucho calor que reciba una celda AIR.</p>
+</li>
+<li>
+<p><strong>Las celdas FUEL sólo se inicializan en <code>y_superficie</code></strong> (la
+   fila del DEM):
+   <code>cpp
+   // engine/simulacion.h::activar
+   for (int cz = 0; cz &lt; CELDAS_QUAD_Z; ++cz) {
+     for (int cx = 0; cx &lt; CELDAS_QUAD_X; ++cx) {
+       const int v_sup = c.y_superficie[idx];
+       Celda&amp; sup = c.grid.get(cx, cz, v_sup);
+       sup.state = EstadoCelda::FUEL;
+     }
+   }</code>
+   Por tanto BURNING (que sólo viene de FUEL) y SMOKE (que sólo
+   viene de BURNING) <strong>únicamente pueden existir en <code>y_superficie</code></strong>.</p>
+</li>
+</ol>
+<h3 id="resumen-fisico">Resumen físico</h3>
+<ul>
+<li>El motor SÍ calcula que el aire encima del foco se calienta
+  (advección + buoyancy transportan temperatura).</li>
+<li>El motor NO marca ese aire como SMOKE — sigue siendo AIR con
+  T alta.</li>
+<li>La API sólo serializa estados ∈ <code>{BURNING, SMOKE}</code> (<code>api/state.py::_RENDERABLES</code>).</li>
+<li>La columna física <strong>existe en los números, no en el <code>state</code></strong>.</li>
+</ul>
+<hr>
+<h2 id="el-error-de-claude-al-diagnosticar">El error de Claude al diagnosticar</h2>
+<p>Mi primera respuesta fue:</p>
+<blockquote>
+<p>"El motor SÍ propaga humo verticalmente — la advección lleva
+ temperatura/density por velocity, así que el humo sube por
+ buoyancy y se transporta."</p>
+</blockquote>
+<p>Esto <strong>mezclaba dos cosas distintas</strong>:</p>
+<ul>
+<li>Verdad: temperature y density sí se transportan vertical.</li>
+<li>Falsedad implícita: que el <code>state</code> SMOKE acompañaba a esa
+  transferencia.</li>
+</ul>
+<p>El usuario me corrigió empíricamente con el print del cliente, que
+mostraba <code>y_SMOKE</code> y <code>y_BURN</code> en el mismo rango. <strong>Tuve que leer 30
+líneas más de <code>adveccion.h</code> para darme cuenta</strong>.</p>
+<p>Disculpa documentada en el commit <code>38c0f58</code>:</p>
+<blockquote>
+<p>"En el commit 003c820 te vendí 'humo en altura real del motor'.
+ Lo escribí confiado en que el motor propagaba state verticalmente.
+ Hubiera bastado con leer 30 líneas más de adveccion.h para darme
+ cuenta."</p>
+</blockquote>
+<hr>
+<h2 id="las-dos-decisiones-del-milestone-que-salen-de-aqui">Las dos decisiones del milestone que salen de aquí</h2>
+<h3 id="92-smoke-virtual">#92 — SMOKE virtual</h3>
+<p>Sin tocar el solver, en el bucle de emisión de <code>engine/main.cpp</code>
+añadir una función <code>estado_aparente()</code>:</p>
+<pre><code class="language-cpp">inline EstadoCelda estado_aparente(const Celda&amp; c) {
+    if (c.state == EstadoCelda::AIR &amp;&amp;
+        c.temperature &gt; UMBRAL_SMOKE_VIRTUAL_TEMP) {  // 200°C
+        return EstadoCelda::SMOKE;
+    }
+    return c.state;
+}
+</code></pre>
+<p>Reporta como SMOKE las celdas AIR calientes. <strong>El state real
+nunca se modifica</strong>, sólo el reportado. El solver es idéntico,
+sólo cambia lo que llega al cliente.</p>
+<p>Coste documentado: ×2.4 latencia, ×58 diffs (todo I/O motor→Python,
+las fases del solver no se ralentizan).</p>
+<h3 id="94-toggle">#94 — Toggle</h3>
+<p>El coste de la columna virtual sólo se paga cuando el usuario
+quiere verla. Comando <code>SMOKE_VIRTUAL on|off</code> en el motor, endpoint
+<code>POST /humo_virtual</code> en la API, tecla <code>H</code> en el cliente. Con
+humo OFF el bench vuelve a baseline (~250 ms/tick).</p>
+<hr>
+<h2 id="limitaciones-inherentes-del-modelo">Limitaciones inherentes del modelo</h2>
+<p>Esta arquitectura del motor (state discreto + 20 niveles
+verticales × ~7.68 m) tiene <strong>límites físicos asumidos</strong>:</p>
+<ul>
+<li>La columna del motor llega máximo a 146 m sobre el DEM.</li>
+<li>En un incendio real una columna pirocumulus puede alcanzar
+  varios km de altura.</li>
+<li>Los niveles bajos del subgrid donde el suelo es alto (&gt;1700 m)
+  están <strong>dentro del DEM</strong> y nunca contendrán humo.</li>
+</ul>
+<p>Para un TFG con foco en propagación lateral y planificación de
+cortafuegos, <strong>estos límites son aceptables</strong>. Para realismo
+atmosférico haría falta un grid plenamente 3D (no 20 niveles
+locales por cuadrante) y un solver con state continuo en lugar
+de discreto. Fuera del scope.</p>
+<hr>
+<h2 id="leccion-general">Lección general</h2>
+<blockquote>
+<p>Antes de afirmar "el motor calcula X", <strong>leer las líneas reales
+del solver</strong>. El nombre de la variable (<code>state</code>, <code>temperature</code>,
+<code>density</code>) <strong>no implica</strong> que esa variable participe en todos los
+pasos del pipeline.</p>
+</blockquote>
+<p>Y la lección operacional:</p>
+<blockquote>
+<p>El usuario tenía la sospecha correcta ("¿el motor no calcula la
+flotabilidad o sí?"). Yo (Claude) confirmé prematuramente. La
+validación empírica del usuario (un print en el cliente) <strong>fue
+más rápida que mi lectura del código</strong>.</p>
+<p>Cuando el usuario sospecha algo concreto sobre el motor, leer
+el código del motor antes de afirmar nada.</p>
+</blockquote>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

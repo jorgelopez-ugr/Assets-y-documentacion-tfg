@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>La métrica compuesta — cómo se puntúa un camino</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · evaluación · <a href="index.html">índice</a></p>
+    <h1>La métrica compuesta</h1>
+    <p class="sub">Cómo se convierte un incendio simulado en <strong>un número</strong>
+      que dice si un camino es bueno. Cuatro factores en [0,1], cuatro pesos que
+      suman 1, una puntuación <strong>mayor = mejor</strong>.</p>
+  </header>
+
+  <p>Evaluar un cortafuegos es el núcleo científico del TFG. Tras simular el fuego con
+    el camino puesto, se miden cuatro factores y se combinan con sus pesos. Los pesos
+    <strong>se leen del código real</strong> (<code>api/evaluacion.py · PesosMetrica</code>):
+    si se reajustan, el diagrama cambia con ellos.</p>
+
+  <!-- ═══════════════════════════ EL ESQUEMA ═══════════════════════════════ -->
+  <h2>De cuatro factores a una puntuación</h2>
+  <figure>
+    <img src="../out/metrica_esquema.png" alt="Esquema: cuatro factores con sus pesos sumados en una puntuación en [0,1]">
+    <figcaption>
+      <b>Eficacia</b> (0.35): área salvada respecto a no hacer nada. <b>Protección</b>
+      (0.25): fracción de zona valiosa que sobrevive. <b>Tiempo</b> (0.15): cuánto
+      retrasa el fuego (1 si lo contiene del todo). <b>Coste-eficiencia</b> (0.25):
+      cuánto se salva por unidad de coste del camino. Cada uno vale [0,1] (1 = ideal),
+      así los pesos son comparables; la suma ponderada es la puntuación.
+    </figcaption>
+  </figure>
+
+  <!-- ═══════════════════════════ LOS PESOS ════════════════════════════════ -->
+  <h2>Los pesos, y por qué son ajustables</h2>
+  <figure>
+    <img src="../out/metrica_pesos.png" alt="Donut de los pesos por defecto y barras comparando perfiles de pesos">
+    <figcaption>
+      A la izquierda, el reparto por defecto (suman 1). A la derecha, el gesto del
+      <b>análisis de sensibilidad</b>: re-pesar la métrica cambia qué prima — un perfil
+      que priorice la protección de especies puntuará distinto los mismos caminos que
+      uno que priorice el coste de construcción.
+    </figcaption>
+  </figure>
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra</span>
+    La evaluación es <strong>ciencia, no anécdota</strong>: una puntuación reproducible,
+    normalizada contra una baseline de «no hacer nada», con pesos explícitos y
+    ajustables. Variarlos es justo el análisis de sensibilidad que pide la propuesta.
+    Ver la métrica <a href="comparativa.html">en acción sobre fuego real</a>.
+  </div>
+
+  <div class="nota">
+    <strong>Reproducible:</strong>
+    <code>testing-lab/.venv/bin/python testing-lab/experiments/metrica.py</code>.
+    El test <code>tests/test_metrica.py</code> verifica que los pesos dibujados son los
+    de <code>PesosMetrica</code> y suman 1, y que los cuatro factores del esquema son
+    los del desglose real de <code>puntuar()</code>.
+  </div>
+
+  <footer class="pie">
+    Vuelve al <a href="index.html">índice</a> o mira la métrica decidiendo entre un
+    <a href="comparativa.html">camino bueno y uno malo</a>.
+  </footer>
+
+</div>
+</body>
+</html>

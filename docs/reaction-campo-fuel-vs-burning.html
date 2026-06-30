@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peculiaridad: el campo `reaction` tiene semántica distinta según el estado de la celda · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Peculiaridad: el campo `reaction` tiene semántica distinta según el estado de la celda</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> · <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a></p>
+<p><strong>MVP afectado:</strong> MVP 4
+<strong>Archivos involucrados:</strong> <code>engine/celda.h</code> · <code>engine/reaccion.h</code> · <code>tools/build_initial_state.py</code></p>
+<hr>
+<h2 id="el-campo-reaction-y-su-significado-original">El campo <code>reaction</code> y su significado original</h2>
+<p>El campo <code>reaction</code> (coordenada de reacción Y) fue diseñado para celdas <code>BURNING</code>:</p>
+<pre><code>Y = 1.0  →  recién encendida, combustible completo
+Y = 0.0  →  combustible agotado, la celda pasa a SMOKE
+</code></pre>
+<p>Cada tick, <code>aplicarReaccion</code> lo reduce: <code>Y -= k * dt * fuel_coefficient</code>.
+Cuando llega a 0, la celda transiciona a <code>SMOKE</code>.</p>
+<hr>
+<h2 id="el-error-inicial-al-crear-las-celdas-fuel">El error inicial al crear las celdas FUEL</h2>
+<p>Al añadir el estado <code>FUEL</code> en MVP 4, <code>build_initial_state.py</code> generaba las celdas de superficie con <code>"reaction": 1.0</code> — el mismo valor que una celda recién encendida:</p>
+<pre><code class="language-python"># INCORRECTO
+cells.append({
+    &quot;state&quot;: &quot;FUEL&quot;,
+    &quot;reaction&quot;: 1.0,   # ← solo tiene sentido para BURNING
+    ...
+})
+</code></pre>
+<p>Esto era semánticamente incorrecto. Una celda <code>FUEL</code> no está ardiendo, no tiene "combustible restante que se consume" — tiene combustible que todavía no ha empezado a consumirse. El valor <code>1.0</code> solo tiene significado en el contexto de <code>BURNING</code>.</p>
+<hr>
+<h2 id="la-correccion">La corrección</h2>
+<p>Las celdas <code>FUEL</code> generadas por <code>build_initial_state.py</code> usan <code>"reaction": 0.0</code>:</p>
+<pre><code class="language-python"># CORRECTO
+cells.append({
+    &quot;state&quot;: &quot;FUEL&quot;,
+    &quot;reaction&quot;: 0.0,   # sin proceso de combustión activo
+    ...
+})
+</code></pre>
+<p>Cuando una celda <code>FUEL</code> supera el umbral de ignición y pasa a <code>BURNING</code>, <code>aplicarReaccion</code> la inicializa explícitamente:</p>
+<pre><code class="language-cpp">if (c.state == EstadoCelda::FUEL &amp;&amp; c.temperature &gt; UMBRAL_IGNICION) {
+    c.state    = EstadoCelda::BURNING;
+    c.reaction = 1.0f;   // ← se asigna aquí, no se hereda de FUEL
+}
+</code></pre>
+<p>La transición es la fuente autoritativa del valor inicial de reaction. Lo que contenga el campo en estado FUEL es irrelevante.</p>
+<hr>
+<h2 id="por-que-no-causo-un-bug-visible-pero-igual-era-incorrecto">Por qué no causó un bug visible (pero igual era incorrecto)</h2>
+<p><code>aplicarReaccion</code> itera sobre el grid pero solo actúa en celdas <code>BURNING</code>:</p>
+<pre><code class="language-cpp">if (c.state == EstadoCelda::FUEL &amp;&amp; c.temperature &gt; UMBRAL_IGNICION) { ... }
+if (c.state != EstadoCelda::BURNING) continue;   // ← FUEL con reaction=1.0 se salta aquí
+</code></pre>
+<p>Una celda <code>FUEL</code> con <code>reaction=1.0</code> nunca pierde reaction (porque el código sale en <code>continue</code> antes del decremento). El valor erróneo persistía en el JSON pero no afectaba al comportamiento.</p>
+<p>Sin embargo, tener <code>reaction=1.0</code> en celdas <code>FUEL</code> podría confundir a cualquier sistema que lea el campo sin mirar primero el estado — por ejemplo, una futura visualización que usara reaction para colorear la intensidad del fuego.</p>
+<hr>
+<h2 id="regla-para-futuras-celdas-de-nuevos-estados">Regla para futuras celdas de nuevos estados</h2>
+<p>Cada estado tiene una semántica propia para los campos de la celda:</p>
+<table>
+<thead>
+<tr>
+<th>Estado</th>
+<th><code>reaction</code></th>
+<th><code>temperature</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>EMPTY</code></td>
+<td>irrelevante (0.0)</td>
+<td>irrelevante (0.0)</td>
+</tr>
+<tr>
+<td><code>FUEL</code></td>
+<td>0.0 (sin combustión)</td>
+<td>20.0 (temperatura ambiente)</td>
+</tr>
+<tr>
+<td><code>BURNING</code></td>
+<td>1.0 al encenderse, decrece hasta 0</td>
+<td>alta (800°C típico)</td>
+</tr>
+<tr>
+<td><code>SMOKE</code></td>
+<td>0.0 (agotado)</td>
+<td>variable (hereda de advección)</td>
+</tr>
+</tbody>
+</table>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

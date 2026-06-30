@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 2 — Proceso Persistente y Terreno · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 2 — Proceso Persistente y Terreno</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<h2 id="objetivo">Objetivo</h2>
+<p>Eliminar el overhead de spawn de proceso por tick y conectar el motor con
+el heightmap real del terreno, preparando el grid para la visualización en Godot.</p>
+<hr>
+<h2 id="decisiones-arquitectonicas">Decisiones arquitectónicas</h2>
+<ul>
+<li><strong>Protocolo línea a línea</strong> — un JSON compacto por línea en stdin → una línea
+  en stdout. Requirió cambiar <code>serializar.h</code> de <code>dump(2)</code> a <code>dump()</code>.</li>
+<li><strong>Proceso singleton</strong> — <code>_get_proceso()</code> en <code>motor.py</code> relanza el proceso si muere.</li>
+<li><strong>Grid 100×10×100</strong> — balance velocidad/fidelidad. ~16×14 píxeles del PNG por
+  celda XZ, ~15m verticales por nivel Y.</li>
+<li><strong>PNG no versionado</strong> — <code>heightmap_16bit.png</code> está en <code>.gitignore</code>.
+  El script es el artefacto; el PNG lo aporta el usuario.</li>
+</ul>
+<hr>
+<h2 id="issues-cerradas">Issues cerradas</h2>
+<h3 id="17-bucle-persistente-en-enginemaincpp"><code>#17</code> — Bucle persistente en <code>engine/main.cpp</code></h3>
+<pre><code class="language-cpp">// ANTES — moría tras un tick
+std::string entrada(std::istreambuf_iterator&lt;char&gt;(std::cin), {});
+std::cout &lt;&lt; gridAString(tick(g, p)) &lt;&lt; &quot;\n&quot;;
+return 0;
+
+// DESPUÉS — vive toda la sesión
+while (std::getline(std::cin, linea)) {
+    Grid g = stringAGrid(linea);
+    std::cout &lt;&lt; gridAString(tick(g, p)) &lt;&lt; &quot;\n&quot;;
+    std::cout.flush();
+}
+</code></pre>
+<h3 id="18-apimotorpy-con-proceso-persistente"><code>#18</code> — <code>api/motor.py</code> con proceso persistente</h3>
+<table>
+<thead>
+<tr>
+<th>Método</th>
+<th>Latencia media</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subprocess.run</code> (un proceso por tick)</td>
+<td>~1.4 ms/tick</td>
+</tr>
+<tr>
+<td><code>Popen</code> persistente</td>
+<td>~0.3 ms/tick</td>
+</tr>
+<tr>
+<td><strong>Mejora</strong></td>
+<td><strong>5× más rápido</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Con el grid real 100×10×100: ~63ms/tick (~15 ticks/segundo).
+El cuello de botella es el solver Jacobi, no el proceso.</p>
+<h3 id="19-toolsterrain_to_jsonpy"><code>#19</code> — <code>tools/terrain_to_json.py</code></h3>
+<p>Convierte <code>heightmap_16bit.png</code> (1598×1393px, 16-bit) al JSON del terreno.
+- Submuestrea a 100×100 por promedio de bloques
+- Mapea elevación a niveles Y [0–9]
+- Devuelve <code>cells: []</code> sin fuego inicial</p>
+<p>Ver detalle: <a href="build-world.html">build_world</a></p>
+<hr>
+<h2 id="estado-al-cerrar-el-mvp">Estado al cerrar el MVP</h2>
+<pre><code>engine/main.cpp          ← bucle persistente (while + flush)
+engine/serializar.h      ← dump() compacto para protocolo línea a línea
+
+api/motor.py             ← Popen persistente, latencia ×5 menor
+
+tools/                   ← nueva carpeta
+├── terrain_to_json.py
+├── test_terrain_to_json.py
+└── requirements.txt
+</code></pre>
+<p>El motor acepta N JSONs seguidos por stdin y responde N JSONs.
+Lo siguiente (MVP 3): conectar el terreno con Godot.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

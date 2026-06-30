@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reaccion.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>reaccion.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Desactualizado en 2 puntos (revisado 2026-06-27)</div><div class="callout-body"><p>(1) La firma real es <code>aplicarReaccion(SubGrid&amp; g, float k, float dt, float
+enfriamiento)</code>: tiene un <strong>4º parámetro <code>enfriamiento</code></strong> (#131) que enfría las
+celdas no ardiendo (<code>T -= T·enfriamiento·dt</code>) y da la contención por ancho —
+ver <a href="contencion-del-cortafuegos-enfriamiento-m2.html">Contención del cortafuegos — enfriamiento (M2)</a>. (2) El <code>k</code> de
+producción es <strong><code>K_REACCION_DEFAULT = 0.1</code></strong> (≈20 ticks por celda), <strong>no
+<code>2.0</code></strong> como dice el apartado "El parámetro k". El resto (transiciones
+FUEL→BURNING→SMOKE, ecuación de Nvidia) sigue vigente.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/reaccion.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code> — paso 4 del tick (<code>aplicarReaccion(g, p.k, p.dt)</code>)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Gestiona el <strong>ciclo de vida del fuego</strong>: determina cuándo una celda <code>FUEL</code> enciende, cuánto dura ardiendo y cuándo se convierte en humo. Es el último paso del tick porque trabaja sobre los campos ya transportados por la advección.</p>
+<hr>
+<h2 id="aplicarreaccion"><code>aplicarReaccion</code></h2>
+<pre><code class="language-cpp">void aplicarReaccion(Grid&amp; g, float k, float dt)
+</code></pre>
+<p>Itera sobre todo el grid y aplica dos transiciones de estado en orden:</p>
+<h3 id="transicion-1-fuel-burning-ignicion">Transición 1: FUEL → BURNING (ignición)</h3>
+<pre><code class="language-cpp">if (c.state == FUEL &amp;&amp; c.temperature &gt; UMBRAL_IGNICION) {
+    c.state    = BURNING;
+    c.reaction = 1.0f;
+    continue;
+}
+</code></pre>
+<p><code>UMBRAL_IGNICION = 100.0°C</code> (constante definida en el módulo). Cuando la advección trae calor suficiente de una celda BURNING vecina, la celda enciende y comienza con <code>reaction = 1.0</code>.</p>
+<p>Ver la mecánica de cómo llega ese calor: <a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a></p>
+<h3 id="transicion-2-consumo-de-combustible-y-burning-smoke">Transición 2: consumo de combustible y BURNING → SMOKE</h3>
+<pre><code class="language-cpp">c.reaction -= k * dt * c.fuel_coefficient;
+
+if (c.reaction &lt;= 0.0f) {
+    c.reaction = 0.0f;
+    c.state    = SMOKE;
+}
+</code></pre>
+<p>La coordenada de reacción decrece linealmente cada tick. El término <code>fuel_coefficient</code> escala la velocidad: materiales más resistentes arden más lento.</p>
+<hr>
+<h2 id="la-ecuacion-de-reaccion">La ecuación de reacción</h2>
+<p>Del paper de Nvidia Real-Time Simulation and Rendering of 3D Fluids:</p>
+<pre><code>∂Y/∂t = −k
+</code></pre>
+<p>Discreta:</p>
+<pre><code>Y_nueva = Y - k * dt
+</code></pre>
+<p>Es una ecuación diferencial de primer orden de decaimiento constante. No depende del entorno (temperatura de los vecinos, velocidad del viento) — solo del tiempo y el tipo de material.</p>
+<hr>
+<h2 id="el-parametro-k">El parámetro <code>k</code></h2>
+<p>Controla cuántos ticks dura una celda ardiendo:</p>
+<pre><code>ticks hasta SMOKE ≈ 1 / (k * dt)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th><code>k</code></th>
+<th><code>dt</code></th>
+<th>Ticks hasta SMOKE</th>
+<th>Escenario aproximado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2.0</td>
+<td>0.5</td>
+<td>1 tick</td>
+<td>Matorral muy seco</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td>0.5</td>
+<td>20 ticks</td>
+<td>Vegetación media</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td>0.1</td>
+<td>100 ticks</td>
+<td>Vegetación densa</td>
+</tr>
+<tr>
+<td>0.01</td>
+<td>0.1</td>
+<td>1000 ticks</td>
+<td>Tronco grueso</td>
+</tr>
+</tbody>
+</table>
+<p>Con los parámetros de producción (<code>k=2.0, dt=0.5</code>), una celda BURNING dura exactamente 1 tick antes de convertirse en SMOKE. Esto hace que el frente de fuego avance muy rápido visualmente.</p>
+<hr>
+<h2 id="por-que-es-el-ultimo-paso">Por qué es el último paso</h2>
+<p>La advección transporta el campo <code>reaction</code> además de temperatura y densidad. Si <code>aplicarReaccion</code> fuera antes de la advección, consumiría combustible que aún no se ha movido a su posición correcta del siguiente tick — la celda perdería combustible en su posición anterior, no en la nueva.</p>
+<p>El orden correcto es:
+1. El combustible se mueve (advección)
+2. El combustible se consume (reacción)</p>
+<hr>
+<h2 id="umbral_ignicion-por-que-100c"><code>UMBRAL_IGNICION</code> — por qué 100°C</h2>
+<p>Es un valor de trabajo elegido para que la propagación sea observable. No tiene base física rigurosa — en realidad, cada especie vegetal tiene su propia temperatura de ignición (entre 250°C y 400°C en condiciones normales).</p>
+<p>Cuando se integre el mapa hiperespectral, el umbral podría variar por celda en función de la especie. Por ahora la constante global de 100°C asegura que el calor generado por la advección (que llega atenuado a las celdas vecinas) sea suficiente para propagar el fuego.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

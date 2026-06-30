@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contrato actual de cortafuegos — auditoría (#117, M2) · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Contrato actual de cortafuegos — auditoría (#117, M2)</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p>Issue #117. Antes de tocar nada en M2 (terraformado), se documenta el contrato
+<strong>real</strong> del cortafuegos tal como está hoy, leído del código. M2 (#118/#119) y
+M3 (trazado automático) deben <strong>reutilizar este mismo contrato</strong>, no inventar
+uno nuevo. Fuente: <code>api/main.py</code>, <code>api/motor.py</code>, <code>engine/main.cpp</code>,
+<code>engine/simulacion.h</code>.</p>
+</blockquote>
+<div class="callout callout-info"><div class="callout-title"><span class="callout-icon">ℹ</span> Foto previa a M2 — algunas partes ya cambiaron (revisado 2026-06-27)</div><div class="callout-body"><p>Esta auditoría retrata el contrato <strong>antes</strong> de implementar el terraformado.
+Dos cosas ya no son así: al pintar con intensidad 1.0 la celda pasa a
+<strong><code>CORTAFUEGOS</code></strong> (no a <code>AIR</code>) — #118 — y el "canal de vuelta de alturas" que
+aquí se plantea como el cambio grande de #119 <strong>no se hizo</strong>: el terraformado
+acabó siendo <strong>visual en Godot</strong>. El resto del contrato (<code>/firebreak</code>, lote,
+migas, coordenadas, dualidad estática/viva) sigue vigente. Ver
+<a href="terraformado-de-cortafuegos-m2.html">Terraformado de cortafuegos (M2)</a>.</p></div></div>
+<h2 id="resumen-en-una-frase">Resumen en una frase</h2>
+<p>Godot manda a la API un <strong>vector de celdas</strong> <code>[[x, z], ...]</code> (índices de celda
+mundial, 1 celda = 1 m) + una <code>intensidad ∈ [0,1]</code>; la API lo reenvía al motor en
+lote; el motor reduce el <code>fuel_coefficient</code> de cada celda
+(<code>nuevo = actual × (1 − intensidad)</code>) y, si llega a 0, la celda de superficie
+deja de arder.</p>
+<h2 id="capa-1-api-http-apimainpy">Capa 1 — API HTTP (<code>api/main.py</code>)</h2>
+<h3 id="post-firebreak"><code>POST /firebreak</code></h3>
+<pre><code class="language-jsonc">// request
+{ &quot;cells&quot;: [[x, z], ...],   // pares de enteros, índice de celda mundial
+  &quot;intensidad&quot;: 1.0 }        // float [0,1], default 1.0 (pydantic valida rango)
+// response
+{ &quot;status&quot;: &quot;ok&quot;, &quot;painted&quot;: N }   // N = celdas que el motor reportó procesadas
+</code></pre>
+<h3 id="delete-firebreak-deshacer"><code>DELETE /firebreak</code> (deshacer)</h3>
+<pre><code class="language-jsonc">// request (mismo formato, SIN intensidad)
+{ &quot;cells&quot;: [[x, z], ...] }
+// response
+{ &quot;status&quot;: &quot;ok&quot;, &quot;undone&quot;: N }
+</code></pre>
+<p>DELETE con cuerpo JSON: requiere <code>Body(...)</code> explícito en FastAPI.</p>
+<p>Modelos: <code>FirebreakPayload(cells: list[tuple[int,int]], intensidad: float=1.0)</code>,
+<code>FirebreakUndoPayload(cells)</code>.</p>
+<h2 id="capa-2-wrapper-del-motor-apimotorpy">Capa 2 — Wrapper del motor (<code>api/motor.py</code>)</h2>
+<ul>
+<li><code>pintar_firebreak(cells, intensidad) -&gt; int</code>: escribe <code>FIREBREAK_BATCH &lt;I&gt; &lt;N&gt;</code></li>
+<li>N líneas <code>"x z"</code>, lee hasta <code>FIREBREAK_DONE N</code>, devuelve N.</li>
+<li><code>deshacer_firebreak(cells) -&gt; int</code>: escribe <code>FIREBREAK_UNDO_BATCH &lt;N&gt;</code> + N
+  líneas <code>"x z"</code>, lee hasta <code>FIREBREAK_UNDO_DONE N</code>.</li>
+<li>Ambas bajo <code>_lock</code> (serializa el acceso al proceso C++).</li>
+</ul>
+<h2 id="capa-3-protocolo-stdinstdout-enginemaincpp">Capa 3 — Protocolo stdin/stdout (<code>engine/main.cpp</code>)</h2>
+<pre><code>API → motor:  FIREBREAK_BATCH &lt;intensidad&gt; &lt;N&gt;\n   luego N líneas &quot;&lt;x&gt; &lt;z&gt;\n&quot;
+              FIREBREAK_UNDO_BATCH &lt;N&gt;\n            luego N líneas &quot;&lt;x&gt; &lt;z&gt;\n&quot;
+motor → API:  FIREBREAK_DONE &lt;N&gt;\n
+              FIREBREAK_UNDO_DONE &lt;N&gt;\n
+</code></pre>
+<ul>
+<li>Cabecera malformada (no parsea <code>intensidad</code>/<code>N</code>, o <code>N&lt;0</code>) → comando ignorado,
+  no consume líneas.</li>
+<li>Línea de celda malformada → se salta, NO cuenta como procesada.</li>
+<li><code>procesadas</code> = nº de líneas sintácticamente válidas (puede diferir de las que
+  realmente cambiaron algo).</li>
+</ul>
+<h2 id="capa-4-logica-del-motor-enginesimulacionh">Capa 4 — Lógica del motor (<code>engine/simulacion.h</code>)</h2>
+<h3 id="pintar_firebreakwx-wz-intensidad"><code>pintar_firebreak(wx, wz, intensidad)</code></h3>
+<ol>
+<li><code>wx&lt;0 || wz&lt;0</code> → no-op. Fuera de la rejilla de cuadrantes → no-op.</li>
+<li><strong>Miga (undo)</strong>: si la celda no está ya en <code>fuel_modificado_</code> (map
+   <code>key_firebreak(qid,idx) → fuel_original</code>), guarda el valor original. Repintar
+   NO sobrescribe la miga (preserva el original real).</li>
+<li><code>nuevo_fuel = fuel_coefficient[idx] × (1 − clamp(intensidad,0,1))</code>. Modifica
+   <strong>la copia estática</strong> <code>Cuadrante::fuel_coefficient[idx]</code> (sobrevive a la
+   desactivación del cuadrante).</li>
+<li>Si el cuadrante está <strong>ACTIVO</strong> y la celda viva de superficie está en estado
+   <strong>FUEL</strong>: propaga el cambio a la <code>Celda</code>. Si <code>nuevo_fuel ≤ 0</code> → la celda pasa
+   a <strong>AIR</strong> (<code>fuel=0</code>); si no, actualiza su <code>fuel_coefficient</code>.</li>
+<li><strong>BURNING / SMOKE / AIR no se tocan</strong> ("una motosierra no apaga incendios").</li>
+</ol>
+<h3 id="deshacer_firebreakwx-wz"><code>deshacer_firebreak(wx, wz)</code></h3>
+<ul>
+<li>Sin miga (nunca se pintó / ya deshecho) → no-op.</li>
+<li>Restaura <code>fuel_coefficient[idx]</code> al original y borra la miga.</li>
+<li>Si activo: FUEL → actualiza fuel; AIR con original&gt;0 → vuelve a FUEL;
+  BURNING/SMOKE → no se tocan.</li>
+<li><code>/reset</code> (RESET) restaura todas las migas antes de desactivar (simulacion.h:270).</li>
+</ul>
+<h2 id="hechos-clave-para-m2m3">Hechos clave para M2/M3</h2>
+<ol>
+<li><strong>Coordenadas</strong>: enteros, índice de celda mundial (1 celda = 1 m). NO metros
+   float, NO índices de cuadrante. Godot ya emite en este formato.</li>
+<li><strong>El cortafuegos vive en dos sitios</strong>: la copia estática del cuadrante
+   (<code>Cuadrante::fuel_coefficient</code>, persistente) y la celda viva (<code>Celda</code>, solo si
+   el cuadrante está activo). Cualquier cambio de M2 debe respetar esta dualidad.</li>
+<li><strong>El cortafuegos NO emite CHANGED</strong>: <code>FIREBREAK_BATCH</code> solo responde
+   <code>FIREBREAK_DONE N</code>. Godot pinta las celdas client-side (él las envió). ⚠️ Para
+   el <strong>terraformado (#119)</strong> esto es el punto clave: el motor tendrá que
+   <strong>devolver las nuevas alturas</strong> de la franja a Godot (hoy no devuelve nada
+   geométrico) — o por un campo nuevo en la respuesta, o por un endpoint/GET. Hay
+   que decidir el mecanismo SIN romper el contrato de pintado existente.</li>
+<li><strong><code>intensidad</code> ya existe</strong> como atenuación de fuel (no binario). El "anular
+   combustible" de #118 es el caso <code>intensidad=1.0</code>.</li>
+<li><strong>El trazado automático (M3)</strong> solo tiene que producir el mismo vector
+   <code>[[x,z],...]</code> y mandarlo por <code>POST /firebreak</code>. Cero código nuevo de pintado.</li>
+</ol>
+<h2 id="que-le-falta-al-contrato-para-m2-terraformado">Qué le falta al contrato para M2 (terraformado)</h2>
+<p>Hoy el cortafuegos <strong>solo toca <code>fuel_coefficient</code></strong>. M2 añade:
+- Marcar las celdas como CORTAFUEGOS (estado/flag) — decidir si nuevo estado de
+  celda o flag aparte.
+- <strong>Aplanar el terreno</strong> (<code>y_superficie</code>) en la franja → es lo que obliga a
+  devolver las nuevas alturas a Godot (punto 3).
+- Material/color distinto en Godot (#120, lado cliente).</p>
+<p>Estas tres son #118 (consolidar anulación de fuel), #119 (terraformado motor+API)
+y #120 (Godot). Esta auditoría es la base de #119: <strong>el cambio grande es el canal
+de vuelta de alturas</strong>, que hoy no existe.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

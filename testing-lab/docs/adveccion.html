@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Advección — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · el paso de fluido (2 de 2) · <a href="index.html">índice</a></p>
+    <h1>Advección — transportar mirando hacia atrás</h1>
+    <p class="sub">La tercera operación mueve la temperatura (y la densidad y la
+      reacción) por el campo de velocidad ya corregido. Dos ideas: el
+      <strong>backtrace semi-lagrangiano</strong> y la <strong>corrección
+      MacCormack</strong> que evita que todo se emborrone.</p>
+  </header>
+
+  <div class="nota">
+    Esta página continúa <a href="presion.html">la de presión</a>: una vez la
+    presión ha dejado el campo de velocidad incompresible, la advección es la que
+    de verdad <em>transporta</em> el calor por él. Todas las figuras usan las
+    funciones reales del motor (<code>engine/adveccion.h</code>).
+  </div>
+
+  <!-- ═══════════════════════════ 1 · SEMI-LAGRANGIANO ═════════════════════ -->
+  <h2>1 · Semi-lagrangiano: ¿de dónde VINO el fluido?</h2>
+  <p>Lo intuitivo sería empujar cada celda hacia adelante siguiendo su velocidad.
+    El esquema semi-lagrangiano hace lo contrario, y por eso es estable: para cada
+    celda pregunta <strong>"¿de qué punto venía el fluido que ahora me ocupa?"</strong>
+    Ese punto de origen es la posición de la celda menos un paso de su velocidad:</p>
+
+  <div class="eq">
+    origen = posición − dt · velocidad
+    <small>y el valor nuevo de la celda = el del campo en ese origen (interpolado)</small>
+  </div>
+
+  <p>Como el origen casi nunca cae justo en el centro de una celda, el valor se
+    <strong>interpola</strong> entre las celdas que lo rodean (bilineal en 2D,
+    trilineal en 3D): un promedio ponderado por cercanía.</p>
+
+  <figure>
+    <img src="../out/adveccion_backtrace.png" alt="Backtrace semi-lagrangiano y zoom de la interpolación bilineal">
+    <figcaption>
+      <b>Izquierda:</b> sobre un campo de velocidad en remolino, para varias
+      celdas se traza la flecha hacia el punto del que vino el fluido (la X roja).
+      Cada celda retrocede a lo largo de <em>su</em> velocidad. <b>Derecha:</b> el
+      zoom de una celda — el valor en el origen se reparte entre las 4 celdas que
+      lo rodean, con un peso por cada una según la cercanía.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    Transportar = <strong>mirar hacia atrás e interpolar</strong>. El valor nuevo
+    de cada celda se copia del punto de donde provino el fluido. Como ese valor
+    siempre es un promedio de valores que ya existían, el método es
+    <strong>incondicionalmente estable</strong>: nunca inventa un valor más
+    extremo que los de alrededor, no importa cómo de grande sea el paso de tiempo.
+  </div>
+
+  <!-- ═══════════════════════════ 2 · DIFUSIÓN ═════════════════════════════ -->
+  <h2>2 · El precio: difusión numérica</h2>
+  <p>Esa misma interpolación que da estabilidad tiene un coste. Cada vez que
+    promediamos, <strong>suavizamos</strong> un poco. Paso tras paso, el promediar
+    repetido emborrona los frentes nítidos: es la <strong>difusión numérica</strong>,
+    un desenfoque que no tiene nada que ver con la física, solo con el método.</p>
+  <p>Se ve en la fila de arriba de la siguiente figura (un disco nítido girando):
+    vuelta tras vuelta el disco pierde altura y se desparrama en una mancha
+    difusa. Idealmente una rotación no debería cambiarlo en absoluto.</p>
+
+  <!-- ═══════════════════════════ 3 · MacCORMACK ═══════════════════════════ -->
+  <h2>3 · MacCormack: recuperar el filo perdido</h2>
+  <p>Para combatir la difusión, el motor añade una corrección de tipo MacCormack.
+    La idea es astuta: si avanzas un paso y luego lo deshaces hacia atrás, no
+    vuelves al punto de partida — la diferencia es el <strong>error</strong> que
+    introdujo el método, y se puede usar para compensarlo. Tres pasos:</p>
+
+  <div class="eq">
+    1. adelante&nbsp;=&nbsp;SL(campo, +dt) &nbsp;&nbsp;·&nbsp;&nbsp;
+    2. atrás&nbsp;=&nbsp;SL(adelante, −dt) <br>
+    3. resultado = adelante + ½ · (original − atrás)
+    <small>el término (original − atrás) estima el error y lo corrige</small>
+  </div>
+
+  <figure>
+    <img src="../out/adveccion_maccormack.png" alt="Semi-lagrangiano vs MacCormack: un disco nítido girando una vuelta">
+    <figcaption>
+      <b>Fila 1 (semi-lagrangiano puro):</b> el disco se emborrona y se apaga.
+      <b>Fila 2 (MacCormack, el del motor):</b> se mantiene compacto y nítido.
+      <b>Abajo:</b> el pico de temperatura tick a tick — el SL cae (difusión),
+      MacCormack se mantiene (de hecho se pasa, ver nota).
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/adveccion_maccormack.gif" alt="Animación lado a lado del disco girando con los dos métodos">
+    <figcaption>Lado a lado: a la izquierda el disco se desvanece (difusión); a la
+      derecha aguanta (MacCormack).</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    El semi-lagrangiano puro <strong>difunde</strong>: tras una vuelta conserva
+    solo ~50&nbsp;% del pico. MacCormack <strong>recupera el filo</strong> midiendo
+    y restando su propio error, y mantiene el disco compacto. Para un frente de
+    fuego, conservar el borde caliente y nítido es justo lo que importa.
+  </div>
+
+  <div class="nota">
+    <strong>Matiz honesto: el overshoot.</strong> El MacCormack del motor no lleva
+    "limitador", así que en bordes muy abruptos puede pasarse: en esta prueba el
+    pico sube por encima del valor inicial (sobre-corrige, ~130&nbsp;%) y aparece
+    algo de ringing. Es el reverso de la moneda: el semi-lagrangiano peca de
+    difusivo (se queda corto) y MacCormack sin limitador peca de anti-difusivo (se
+    pasa). En el motor real esto queda acotado porque la temperatura la limitan
+    otras fases (la reacción y el "sostener" del foco la fijan a un máximo).
+  </div>
+
+  <p style="margin-top:1.5rem">¿Y para qué sirve mover el calor por ese campo?
+    Para verlo todo junto — buoyancy, presión y advección colaborando para llevar
+    el fuego hacia el combustible — mira el
+    <a href="presion.html#capstone"><strong>experimento integrado del paso de
+    fluido</strong></a>.</p>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/adveccion_backtrace.py    # qué es el semi-lagrangiano
+testing-lab/.venv/bin/python testing-lab/experiments/adveccion_maccormack.py   # difusión vs MacCormack (+ GIF)
+# tests de cordura:
+testing-lab/.venv/bin/python testing-lab/tests/test_adveccion_backtrace.py
+testing-lab/.venv/bin/python testing-lab/tests/test_adveccion_maccormack.py</code></pre>
+
+  <footer class="pie">
+    Funciones reales del motor: <code>interpolar</code>, <code>semiLagrangiano</code>
+    (el baseline puro) y <code>advectar</code> (MacCormack completo)
+    (<code>engine/adveccion.h</code>). El campo de velocidad no lo toca la
+    advección, así que la rotación se mantiene constante entre pasos. Cortes 2D de
+    un grid 50×50×20.
+  </footer>
+
+</div>
+</body>
+</html>

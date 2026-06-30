@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>buoyancy.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>buoyancy.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Matiz (revisado 2026-06-27)</div><div class="callout-body"><p>El contenido (fuerza <code>A·T − B·ρ</code>, solo BURNING/SMOKE, <code>A=0.1</code>/<code>B=0.5</code>) está al
+día. Dos matices: la buoyancy ya <strong>no es la primera</strong> fase del tick — antes va
+<code>aplicarViento</code> (#74) — y se invoca desde <code>Simulacion::tick</code>
+(<code>engine/simulacion.h</code>), no desde <code>main.cpp</code>.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/buoyancy.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code> — paso 1 del tick (<code>aplicarBuoyancy(g, p.A, p.B)</code>)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Implementa la fuerza de flotabilidad: el calor hace subir el gas. Sin buoyancy, las celdas BURNING no tendrían velocidad ascendente y la advección no transportaría el calor hacia arriba — el fuego quedaría estático.</p>
+<p>Es el primer paso del tick porque crea las velocidades que la presión y la advección van a usar.</p>
+<hr>
+<h2 id="aplicarbuoyancy"><code>aplicarBuoyancy</code></h2>
+<pre><code class="language-cpp">void aplicarBuoyancy(Grid&amp; g, float A = 0.1f, float B = 0.5f)
+</code></pre>
+<p>Modifica <code>velocity.z</code> (el eje vertical del fluido) de cada celda en función de su temperatura y densidad:</p>
+<pre><code>fuerza = A * temperature - B * density
+velocity.z += fuerza
+</code></pre>
+<p><strong>Solo aplica a <code>BURNING</code> y <code>SMOKE</code>.</strong> Las celdas <code>FUEL</code> son combustible sólido — no tienen dinámica de fluido. Ver por qué esto es importante: <a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a></p>
+<hr>
+<h2 id="los-parametros-a-y-b">Los parámetros A y B</h2>
+<h3 id="a-empuje-termico"><code>A</code> — empuje térmico</h3>
+<p>Controla cuánto empuja hacia arriba cada grado de temperatura.</p>
+<pre><code>A = 0.1, temperature = 800°C  →  fuerza = 80 unidades/tick
+A = 0.01, temperature = 800°C →  fuerza = 8 unidades/tick
+</code></pre>
+<p>Con <code>A</code> alto, el gas sube rápido y la advección transporta el calor lejos en cada tick. Si <code>A * temperature * dt &gt; 1</code>, el esquema MacCormack puede volverse inestable (CFL violado). Ver <a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a>.</p>
+<h3 id="b-freno-por-densidad"><code>B</code> — freno por densidad</h3>
+<p>Reduce la fuerza cuando el humo es denso. El humo recién generado tiene densidad alta y sube más lento. Con el tiempo la densidad cae (por advección hacia celdas vacías) y el humo ligero sube más rápido.</p>
+<pre><code>B = 0.5, density = 0.4  →  freno = 0.2 unidades
+B = 0.5, density = 2.0  →  freno = 1.0 unidades (el gas pesado puede bajar)
+</code></pre>
+<hr>
+<h2 id="valores-por-defecto-y-efecto-visual">Valores por defecto y efecto visual</h2>
+<table>
+<thead>
+<tr>
+<th>Configuración</th>
+<th>Efecto</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>A=0.1, B=0.5</code> (producción)</td>
+<td>Columna de fuego que sube rápidamente</td>
+</tr>
+<tr>
+<td><code>A=0.01, B=0.5</code> (tests)</td>
+<td>Ascenso lento, numéricamente estable, buena propagación lateral</td>
+</tr>
+<tr>
+<td><code>A=0.0</code></td>
+<td>Sin ascenso — el calor no se mueve verticalmente</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="por-que-es-el-primer-paso-del-tick">Por qué es el primer paso del tick</h2>
+<p>La buoyancy genera velocidades. La presión las corrige para que sean divergencia-cero. La advección las usa para transportar temperatura. Si la buoyancy se aplicara después de la presión, las nuevas velocidades no habrían pasado por la corrección de incompresibilidad — el fluido se comportaría como compresible.</p>
+<pre><code>aplicarBuoyancy  →  (velocidades con divergencia)
+resolverPresion  →  (velocidades divergencia-cero)
+advectar         →  (temperatura y densidad transportadas con esas velocidades)
+</code></pre>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

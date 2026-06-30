@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Del GeoTIFF crudo al heightmap de 16 bits</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · datos · <a href="index.html">índice</a></p>
+    <h1>Del GeoTIFF crudo al heightmap de 16 bits</h1>
+    <p class="sub">El relieve del proyecto es un DEM <strong>real</strong> (Puerto La
+      Mata). Antes de que el motor lo pueda usar hay que <strong>limpiarlo</strong> y
+      <strong>exportarlo bien</strong>. Dos comparativas antes/después, calculadas
+      sobre el <code>heightmap_16bit.png</code> de verdad, explican por qué.</p>
+  </header>
+
+  <p>El dato llega como un <strong>GeoTIFF</strong> (datos LiDAR/satélite, CRS
+    <code>EPSG:32630</code>): una imagen donde cada píxel es 1&nbsp;m² de monte y su
+    valor es la altitud en metros. Pero el fichero crudo no es directamente usable:
+    trae celdas «sin dato» y, si se exporta con poca precisión, el terreno sale
+    escalonado. Estas dos páginas muestran las dos decisiones que convierten ese
+    GeoTIFF en el <code>heightmap_16bit.png</code> que alimenta a
+    <code>build_world.py</code>, al A* (<code>api/dem.py</code>) y a Godot.</p>
+
+  <div class="cifras">
+    <div class="cifra"><div class="v">1598 × 1393</div><div class="k">píxeles = metros (1 px/m²)</div></div>
+    <div class="cifra"><div class="v">55,5 %</div><div class="k">celdas NoData en el crudo</div></div>
+    <div class="cifra"><div class="v">~140 m</div><div class="k">de desnivel real (1602–1738 m)</div></div>
+    <div class="cifra"><div class="v">65 536</div><div class="k">niveles del PNG 16-bit</div></div>
+  </div>
+
+  <!-- ═══════════════════════════ NODATA ════════════════════════════════════ -->
+  <h2>1 · Limpiar el NoData: el «prisma gigante»</h2>
+  <p>La huella del escaneo es irregular: un <strong>55,5&nbsp;%</strong> de las celdas
+    son <em>NoData</em>, codificadas con el valor centinela <code>-9999</code> (océano,
+    bordes, errores de medición). Si no se enmascaran, el motor cree que el terreno va
+    de <code>-9999</code> a <code>1738&nbsp;m</code>: un rango de casi
+    <strong>12&nbsp;000&nbsp;m</strong> en el que el relieve real (~140&nbsp;m) cabe en
+    el 1&nbsp;% superior de la escala y se vuelve <strong>invisible</strong>.</p>
+
+  <figure>
+    <img src="../out/heightmap_nodata.png" alt="Comparación antes/después de enmascarar el NoData: a la izquierda el terreno es invisible, a la derecha aparece el relieve">
+    <figcaption>
+      <b>Izquierda (sin limpiar):</b> con el rango <code>-9999→1738&nbsp;m</code>, todo
+      el terreno válido cae en una sola banda de color — una mancha plana donde no se
+      distingue ningún relieve. <b>Derecha (limpio):</b> enmascarado el NoData (gris) y
+      ceñido el rango a los datos, <b>el mismo fichero</b> revela el valle completo, con
+      su ladera y sus vaguadas.
+    </figcaption>
+  </figure>
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra</span>
+    El dato crudo <strong>no es usable tal cual</strong>: la fase de diagnóstico y
+    limpieza del NoData no es un capricho, es lo que hace que el relieve exista. Es la
+    diferencia entre un prisma plano e inservible y un terreno con forma.
+  </div>
+
+  <!-- ═══════════════════════════ BITS ══════════════════════════════════════ -->
+  <h2>2 · Exportar a 16 bits y no a 8: el escalonado</h2>
+  <p>Una vez limpio, el rango real (~140&nbsp;m) se normaliza y se guarda como PNG. La
+    pregunta es con cuánta precisión. Un PNG de <strong>8 bits</strong> solo tiene 256
+    niveles: repartidos en 140&nbsp;m dan saltos de <strong>~0,54&nbsp;m</strong>, que
+    aparecen como <strong>terrazas</strong>. Un PNG de <strong>16 bits</strong> tiene
+    65&nbsp;536 niveles: <strong>~2&nbsp;mm</strong> por nivel, una ladera continua.</p>
+
+  <figure>
+    <img src="../out/heightmap_bits.png" alt="Comparación 8 bits vs 16 bits: el de 8 bits muestra escalones, el de 16 una pendiente continua">
+    <figcaption>
+      <b>Arriba</b>, el mismo trozo de ladera con relieve sombreado: a 8&nbsp;bits
+      asoman bandas/escalones (sobre todo en las zonas de pendiente suave); a 16&nbsp;bits
+      la superficie es lisa. <b>Abajo</b>, un corte de 48&nbsp;m: la línea roja
+      (8&nbsp;bits) es una <b>escalera</b> de mesetas planas y saltos de 0,54&nbsp;m,
+      mientras que la azul (16&nbsp;bits) sigue la pendiente de forma continua.
+    </figcaption>
+  </figure>
+  <div class="demuestra">
+    <span class="lbl">Lo que demuestra</span>
+    La profundidad de bits no es un detalle estético: a 8&nbsp;bits, una pendiente suave
+    se convierte en una escalera de medio metro. Los 16&nbsp;bits dan
+    <strong>~250× más resolución vertical</strong> (2&nbsp;mm frente a 0,54&nbsp;m), y por
+    eso son el formato elegido para conservar fielmente el terreno.
+  </div>
+
+  <h2>Un solo fichero, tres consumidores</h2>
+  <p>El <code>heightmap_16bit.png</code> resultante es la <strong>fuente de verdad del
+    relieve</strong> para todo el sistema, con la misma convención píxel→metros en los
+    tres sitios:</p>
+  <table>
+    <thead><tr><th>Consumidor</th><th>Qué saca del heightmap</th></tr></thead>
+    <tbody>
+      <tr><td><code>tools/build_world.py</code></td><td>niveles verticales y pendiente por cuadrante → <code>world.dat</code></td></tr>
+      <tr><td><code>api/dem.py</code> (A*)</td><td>elevación y pendiente <em>finas</em> por celda para el coste del trazado</td></tr>
+      <tr><td>Godot</td><td>textura de <em>displacement</em> del terreno 3D (variación relativa)</td></tr>
+    </tbody>
+  </table>
+
+  <div class="nota">
+    <strong>Reproducible:</strong>
+    <code>testing-lab/.venv/bin/python testing-lab/experiments/heightmap_bits.py</code>.
+    El test <code>tests/test_heightmap_bits.py</code> verifica que el heightmap real trae
+    NoData, que enmascararlo encoge el rango de ~12&nbsp;000&nbsp;m a ~140&nbsp;m, y que
+    cuantizar a 8&nbsp;bits da ≤256 niveles con un escalón &gt;100× mayor que el de
+    16&nbsp;bits. Todo se calcula leyendo el <code>heightmap_16bit.png</code> del repo.
+  </div>
+
+  <footer class="pie">
+    Vuelve al <a href="index.html">índice</a>, mira <a href="terreno.html">las cuatro
+    capas reales del terreno</a> o cómo el A* <a href="astar.html">traza el cortafuegos</a>
+    sobre este relieve.
+  </footer>
+
+</div>
+</body>
+</html>

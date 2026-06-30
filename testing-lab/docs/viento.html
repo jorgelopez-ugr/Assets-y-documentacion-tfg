@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Viento — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · operación 2 de 5 · <a href="index.html">índice</a></p>
+    <h1>El viento</h1>
+    <p class="sub">La primera fuerza del tick: un empuje horizontal uniforme sobre
+      el aire. Es lo que hace que el fuego corra más rápido a favor del viento.
+      Sencilla, pero con una convención de ejes que hay que respetar.</p>
+  </header>
+
+  <!-- ════════════════════════════════ QUÉ HACE ════════════════════════════ -->
+  <h2>Qué hace la función</h2>
+  <p>La función real del motor es
+    <a href="../../engine/viento.h"><code>aplicarViento</code></a>. A cada celda de
+    gas le suma una pequeña aceleración horizontal, proporcional al viento global,
+    al paso de tiempo y a un factor de acoplamiento:</p>
+
+  <div class="eq">
+    velocity.x += viento.x · dt · acoplamiento <br>
+    velocity.y += viento.y · dt · acoplamiento
+    <small>acoplamiento = 0.1 por defecto (el aire se ajusta con inercia, no de golpe)</small>
+  </div>
+
+  <div class="nota">
+    <strong>Convención de ejes (crítica).</strong> El motor guarda el viento en su
+    convención interna: <code>viento.x</code> → eje X del mundo (<code>velocity.x</code>),
+    <code>viento.y</code> → eje Z del mundo (<code>velocity.y</code>, <em>no</em>
+    <code>.z</code>). La componente vertical <code>velocity.z</code> <strong>no se
+    toca nunca</strong> aquí: es competencia exclusiva de la
+    <a href="buoyancy.html">flotabilidad</a>. Sumar viento horizontal a la vertical
+    empujaría el humo hacia arriba en lugar de a un lado — un bug catastrófico.
+  </div>
+
+  <!-- ═══════════════════════════ COMPORTAMIENTO ═══════════════════════════ -->
+  <h2>Dos propiedades: filtro de estado y acumulación</h2>
+  <figure>
+    <img src="../out/viento.png" alt="Campo de viento con franja FUEL sin empuje, y rampa de |v| creciente">
+    <figcaption>
+      <b>Izquierda:</b> el viento sopla en diagonal, pero la franja de
+      <b>combustible sólido</b> (FUEL, en gris) <b>no recibe empuje</b> — el viento
+      solo tiene sentido sobre los gases (AIR/BURNING/SMOKE). <b>Derecha:</b> la
+      velocidad de una celda de gas crece <b>linealmente</b> con los ticks: cada
+      paso suma un poco más (acoplamiento), el aire va cogiendo el viento.
+    </figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    Dos cosas. <strong>(1) Filtro de estado:</strong> el viento empuja gases, no el
+    combustible sólido (una ráfaga no mueve un tronco). <strong>(2) Acumulación:</strong>
+    no impone una velocidad, la <em>acelera</em> poco a poco — por eso |v| crece
+    recta con los ticks. Y la vertical queda intacta (vz&nbsp;=&nbsp;0).
+  </div>
+
+  <!-- ═══════════════════════════ POR QUÉ IMPORTA ══════════════════════════ -->
+  <h2>¿Para qué sirve? Inclina el penacho</h2>
+  <p>Por sí sola, esta fuerza solo cambia números en el campo de velocidad. Su
+    efecto se ve cuando entra en el resto del paso de fluido: el empuje horizontal
+    se suma a la circulación que crea la <a href="presion.html">presión</a>, y la
+    <a href="adveccion.html">advección</a> transporta el calor por ese campo
+    sesgado. Resultado: el penacho se inclina a sotavento. Comparamos dos mundos
+    idénticos, uno sin viento y otro con un viento suave hacia la derecha:</p>
+
+  <figure>
+    <img src="../out/viento_demo.png" alt="Penacho recto sin viento vs penacho inclinado con viento">
+    <figcaption>
+      Corte vertical, foco caliente en la base. <b>Arriba (sin viento):</b> el
+      penacho sube recto y simétrico. <b>Abajo (con viento →):</b> el mismo
+      penacho se <b>inclina a sotavento</b>; su centro de masa se desplaza a la
+      derecha tick a tick (curva inferior).
+    </figcaption>
+  </figure>
+
+  <figure>
+    <img src="../out/viento_demo.gif" alt="Animación de los dos penachos, recto y inclinado">
+    <figcaption>Animado: a la izquierda recto, a la derecha inclinándose con el
+      viento.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    El viento <strong>sesga el transporte del calor a favor de su dirección</strong>.
+    En la propagación del incendio, esto se traduce en que el fuego avanza más
+    rápido a sotavento — el factor que más condiciona dónde colocar un cortafuegos.
+  </div>
+
+  <div class="nota">
+    <strong>Nota.</strong> El viento del experimento es suave a propósito. Con un
+    viento fuerte la advección barrería el penacho fuera del dominio antes de que
+    se forme; y, como en el <a href="presion.html#capstone">capstone</a>, pasados
+    ~6–8 ticks el experimento aislado se desestabiliza. Nos quedamos con la
+    inclinación ya visible.
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/viento.py        # filtro + acumulación
+testing-lab/.venv/bin/python testing-lab/experiments/viento_demo.py   # penacho inclinado (+ GIF)
+testing-lab/.venv/bin/python testing-lab/tests/test_viento.py
+testing-lab/.venv/bin/python testing-lab/tests/test_viento_demo.py</code></pre>
+
+  <footer class="pie">
+    Función real del motor: <code>aplicarViento</code> (<code>engine/viento.h</code>).
+    La convención de ejes vive en <code>docs/convenciones-ejes.md</code> del
+    proyecto. Cortes 2D de un grid 50×50×20.
+  </footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planificador de cortafuegos — TFG · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Planificador de cortafuegos — TFG</h1>
+  </header>
+  <article class="doc">
+<blockquote>
+<p><strong>Herramienta para planificar caminos forestales / cortafuegos</strong> sobre terreno
+real (DEM 1598×1393 m) con vegetación derivada de datos hiperespectrales, y
+<strong>evaluar la calidad de cada cortafuegos mediante una simulación de propagación
+de incendios</strong>. El fuego es la <strong>función de evaluación</strong>, no el producto.</p>
+<p>Motor C++ por cuadrantes · API FastAPI · Visualización Godot 4.x.
+El motor volumétrico de fuego/humo se conserva tras un flag (<code>physics_mode</code>)
+como material de demostración; el producto corre en <strong>modo superficie</strong>.</p>
+</blockquote>
+<div class="callout callout-info"><div class="callout-title"><span class="callout-icon">ℹ</span> Mapa de Contenidos (MOC)</div><div class="callout-body"><p>Este es el índice de la bóveda. Los docs marcados como <strong>histórico</strong> reflejan
+estados previos al refactor de caminos forestales (jun 2026) y se conservan
+como traza del proceso.</p></div></div>
+<hr>
+<h2 id="el-flujo-del-producto-3-fases">El flujo del producto (3 fases)</h2>
+<pre><code>[OFFLINE — una vez]
+heightmap_16bit.png + capturas hiperespectrales
+        ↓
+[[build_world]]  →  data/world.dat   (fuel + altura por celda)
+
+[RUNTIME — 3 fases]
+1. PINTAR    el usuario dibuja cortafuegos (manual) o los traza con A* (POST /trazar)
+2. QUEMA     el usuario lanza el fuego (POST /ignite); el motor propaga (POST /tick, diffs)
+3. EVALUAR   al apagarse / a los 5 min → POST /resultado → puntuación del incendio
+        ↓
+POST /firebreak  aplica un cortafuegos (anula fuel + terraforma + estado CORTAFUEGOS)
+POST /reset      vuelve a la fase de pintado
+</code></pre>
+<hr>
+<h2 id="documentacion">Documentación</h2>
+<h3 id="vision-global">Visión global</h3>
+<ul>
+<li><a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> — las tres capas (motor / API / Godot), los
+  cuadrantes y el protocolo de comandos.</li>
+<li><a href="motor-de-fuego-las-operaciones-del-tick-y-como-se-combinan.html">Motor de fuego — las operaciones del tick y cómo se combinan</a> ⭐ — qué hace
+  cada fase del tick (viento, buoyancy, presión, advección, reacción…) y <strong>cómo se
+  combinan</strong> para propagar el fuego. La presión a fondo.</li>
+</ul>
+<h3 id="el-producto-cortafuegos-refactor-m1m4">El producto — cortafuegos (refactor M1–M4)</h3>
+<ul>
+<li><a href="contrato-de-cortafuegos-auditoria-m2.html">Contrato de Cortafuegos (auditoría M2)</a> — el contrato <code>/firebreak</code> end-to-end.</li>
+<li><a href="terraformado-de-cortafuegos-m2.html">Terraformado de cortafuegos (M2)</a> — aplanar la franja (visual, en Godot).</li>
+<li><a href="contencion-del-cortafuegos-enfriamiento-m2.html">Contención del cortafuegos — enfriamiento (M2)</a> — por qué la contención
+  depende del ancho; enfriamiento + adyacencia + quemado persistente.</li>
+<li><a href="trazado-automatico-a-coste-y-datos-m3.html">Trazado automático A — coste y datos (M3)</a> — A* sobre el DEM, coste por celda.</li>
+<li><a href="evaluacion-de-caminos-m4.html">Evaluación de caminos (M4)</a> — la métrica compuesta: el fuego como evaluación.</li>
+</ul>
+<h3 id="motor-c-engine">Motor C++ (<code>engine/</code>)</h3>
+<ul>
+<li><a href="cuadrante-y-celda.html">Cuadrante y Celda</a> — estructuras: celda, SubGrid, Cuadrante.</li>
+<li><a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> — física por cuadrante, halos y activación dinámica.</li>
+<li><a href="protocolo-del-motor.html">Protocolo del Motor</a> — comandos de texto stdin/stdout.</li>
+</ul>
+<h4 id="clases-del-motor">Clases del motor</h4>
+<ul>
+<li><a href="celda.html">celda</a> · <a href="cuadrante.html">cuadrante</a> · <a href="world.html">world</a> · <a href="simulacion.html">simulacion</a> · <a href="buoyancy.html">buoyancy</a> ·
+  <a href="adveccion.html">adveccion</a> · <a href="presion.html">presion</a> · <a href="reaccion.html">reaccion</a></li>
+</ul>
+<h3 id="api-python-api">API Python (<code>api/</code>)</h3>
+<ul>
+<li><a href="arquitectura-api.html">Arquitectura API</a> — módulos, proceso vivo del motor, endpoints.</li>
+</ul>
+<h3 id="herramientas-tools">Herramientas (<code>tools/</code>)</h3>
+<ul>
+<li><a href="build-world.html">build_world</a> — generador offline de <code>data/world.dat</code>.</li>
+<li><a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a> — derivación del fuel desde las capas
+  hiperespectrales.</li>
+</ul>
+<h3 id="logging-y-observabilidad">Logging y observabilidad</h3>
+<ul>
+<li><a href="sistema-de-logging.html">Sistema de Logging</a> · <a href="rotate-logs.html">rotate_logs</a></li>
+</ul>
+<h3 id="errores-afrontados-bitacora-de-bugs">Errores afrontados (bitácora de bugs)</h3>
+<ul>
+<li><a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a> · <a href="reaction-campo-fuel-vs-burning.html">reaction-campo-fuel-vs-burning</a> ·
+  <a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a> · <a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a> ·
+  <a href="int16-overflow-build-world.html">int16-overflow-build-world</a> · <a href="json-protocolo-linea-unica.html">json-protocolo-linea-unica</a> ·
+  <a href="mvp5-cuello-botella-memoria.html">mvp5-cuello-botella-memoria</a> · <a href="mvp6-profiling.html">mvp6-profiling</a> ·
+  <a href="race-condition-motor-stdin-stdout.html">race-condition-motor-stdin-stdout</a> · <a href="state-smoke-no-propaga-en-aire.html">state-smoke-no-propaga-en-aire</a> ·
+  <a href="veleta-no-renderiza-en-canvaslayer.html">veleta-no-renderiza-en-canvaslayer</a></li>
+</ul>
+<h3 id="referencias-cientificas">Referencias científicas</h3>
+<ul>
+<li><a href="nvidia-propagation-fire-smoke-maths.html">nvidia-propagation-fire-smoke-maths</a></li>
+</ul>
+<h3 id="notas-personales">Notas personales</h3>
+<ul>
+<li><span class="wikilink-missing" title="nota no publicada: PERSONAL-NOTES">PERSONAL-NOTES</span></li>
+</ul>
+<hr>
+<h2 id="historico-iteraciones-del-proyecto-pre-refactor">Histórico — iteraciones del proyecto (pre-refactor)</h2>
+<blockquote>
+<p>Documentan el camino hasta el refactor de caminos forestales. Útiles para la
+memoria del TFG, pero NO reflejan el estado actual.</p>
+</blockquote>
+<ul>
+<li><strong>MVPs</strong>: <a href="mvp-0-motor-c-base.html">MVP 0 — Motor C++ Base</a> · <a href="mvp-1-api-fastapi.html">MVP 1 — API FastAPI</a> ·
+  <a href="mvp-2-proceso-persistente-y-terreno.html">MVP 2 — Proceso Persistente y Terreno</a> · <a href="mvp-3-celdas-activas-e-ignicion.html">MVP 3 — Celdas Activas e Ignicion</a> ·
+  <a href="mvp-3-5-design-changes.html">MVP 3.5 — Design Changes</a> · <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a> ·
+  <a href="mvp-arquitectura-de-cuadrantes.html">MVP — Arquitectura de Cuadrantes</a> (rediseño por cuadrantes).</li>
+<li><strong>Optimización del motor</strong>: <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> ·
+  <a href="optimizacion-fase-benchmarking-recopilatorio.html">Optimización — Fase Benchmarking — Recopilatorio</a> (issues 61–66).</li>
+<li><strong>Cortafuegos pintables</strong> (base del producto): <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a>
+  (issues 69–72).</li>
+<li><strong>Viento</strong>: <a href="viento-recopilatorio.html">Viento — Recopilatorio</a> (issues 74–76).</li>
+<li><strong>Integración Godot-Motor</strong> (milestone pausado): <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a> ·
+  <a href="motor-capacidades-vs-visualizacion.html">Motor — Capacidades vs Visualización</a>.</li>
+</ul>
+<hr>
+<h2 id="glosario-rapido">Glosario rápido</h2>
+<table>
+<thead>
+<tr>
+<th>Término</th>
+<th>Significado</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Cortafuegos</strong></td>
+<td>Franja sin combustible y terraformada que intenta contener el fuego (el entregable).</td>
+</tr>
+<tr>
+<td><strong>Modo superficie</strong></td>
+<td>Config por defecto: el fuego solo arde en el suelo (1 capa de aire).</td>
+</tr>
+<tr>
+<td><strong>Modo volumétrico</strong></td>
+<td>Tras flag <code>physics_mode</code>: motor de fluidos 3D completo (demo).</td>
+</tr>
+<tr>
+<td><strong>Métrica compuesta</strong></td>
+<td>Puntuación ponderada de la calidad de un cortafuegos.</td>
+</tr>
+<tr>
+<td><strong>Terraformado</strong></td>
+<td>Aplanar el terreno bajo el trazo del cortafuegos.</td>
+</tr>
+<tr>
+<td><strong>Celda</strong></td>
+<td>Unidad mínima: 1×1 m horizontal, ~7 m vertical.</td>
+</tr>
+<tr>
+<td><strong>Cuadrante</strong></td>
+<td>Bloque de 50×50×20 celdas con datos estáticos + grid dinámico.</td>
+</tr>
+<tr>
+<td><strong>Tick</strong></td>
+<td>Un paso de tiempo de la simulación.</td>
+</tr>
+<tr>
+<td><strong>Halo</strong></td>
+<td>Borde de un cuadrante, intercambiado con los adyacentes.</td>
+</tr>
+<tr>
+<td><strong>FUEL</strong></td>
+<td>Celda de superficie con combustible; ignita a &gt; 100 °C.</td>
+</tr>
+<tr>
+<td><strong>BURNING</strong></td>
+<td>Ardiendo activamente; emite calor sostenido.</td>
+</tr>
+<tr>
+<td><strong>SMOKE</strong></td>
+<td>Combustible agotado (quemado).</td>
+</tr>
+<tr>
+<td><strong>AIR</strong></td>
+<td>Aire vivo (transporta calor en la banda K=1).</td>
+</tr>
+<tr>
+<td><strong>EMPTY</strong></td>
+<td>Aire inerte (apagado en modo superficie); el solver lo salta.</td>
+</tr>
+<tr>
+<td><strong>CORTAFUEGOS</strong></td>
+<td>Suelo despejado por un cortafuegos: no arde, inerte, fuel=0.</td>
+</tr>
+<tr>
+<td><strong>fuel_coefficient</strong></td>
+<td>Combustibilidad del material [0–1], derivada de la clasificación hiperespectral.</td>
+</tr>
+<tr>
+<td><strong>world.dat</strong></td>
+<td>Fuente de verdad estática del terreno (binario little-endian).</td>
+</tr>
+</tbody>
+</table>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#63` — Parada temprana en Jacobi · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#63` — Parada temprana en Jacobi</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="optimizacion-62-profiling-por-fase.html">Optimización — 62 — Profiling por fase</a></p>
+<h2 id="por-que-esta-issue-existe">Por qué esta issue existe</h2>
+<p><a href="optimizacion-62-profiling-por-fase.html">#62</a> confirmó que <code>resolverPresion()</code>
+absorbe <strong>70 %</strong> del coste físico por tick. Con 30 iteraciones Jacobi fijas
+por llamada, una optimización aquí impacta directamente la latencia global.</p>
+<h2 id="lo-que-no-funciono-bajar-el-cap-a-20-iteraciones">Lo que NO funcionó: bajar el cap a 20 iteraciones</h2>
+<p>Primer intento (lo que el issue propone literalmente como punto 1):
+cambiar el default de 30 → 20 iteraciones.</p>
+<p>Resultado a 100 ticks, ignición central:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">30 iters (baseline)</th>
+<th style="text-align: right;">20 iters</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión</td>
+<td style="text-align: right;">60.45 ms/tick</td>
+<td style="text-align: right;">41.31 ms/tick</td>
+<td style="text-align: right;"><strong>-31.7 %</strong> ✓</td>
+</tr>
+<tr>
+<td>BURNING tick 100</td>
+<td style="text-align: right;">2651</td>
+<td style="text-align: right;">2456</td>
+<td style="text-align: right;"><strong>-7.36 %</strong> ✗</td>
+</tr>
+<tr>
+<td>SMOKE tick 100</td>
+<td style="text-align: right;">19357</td>
+<td style="text-align: right;">18682</td>
+<td style="text-align: right;">-3.49 %</td>
+</tr>
+</tbody>
+</table>
+<p>El frente de fuego se queda corto: con menos iteraciones Jacobi, el campo
+de velocidades es menos divergente-libre, el fluido "se acumula" raro y el
+calor no propaga igual. Saltarse el ±5 % en BURNING <strong>descarta</strong> este camino.</p>
+<h2 id="lo-que-funciono-parada-temprana-con-cap30">Lo que funcionó: parada temprana con cap=30</h2>
+<p><code>resolverPresion()</code> ahora calcula <code>max_x |p_nuevo(x) - p_actual(x)|</code> durante
+la pasada Jacobi y sale del bucle si baja de <code>epsilon</code> (default <strong>0.5</strong>).
+Mantenemos el cap de 30 iteraciones — solo es una garantía superior.</p>
+<p>Por qué funciona: el campo de presión se inicializa con el valor del tick
+anterior (warm-start). En la mayoría de cuadrantes, dos o tres iteraciones
+bastan para "seguir" la pequeña perturbación de cada tick; las 30 fijas
+estaban gastando trabajo en estabilizar décimas que no afectan a la
+propagación.</p>
+<h3 id="coste-del-check">Coste del check</h3>
+<p>Una operación <code>fabs/max</code> por celda dentro del barrido ya existente. Sin
+pasada extra. Overhead medido al cap (con <code>epsilon=0</code> para forzar 30 iters):
+3-5 % sobre la latencia de presión — amortizado en cuanto la parada salta
+una sola iteración.</p>
+<h3 id="resultado-a-100-ticks-05">Resultado a 100 ticks (ε = 0.5)</h3>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th style="text-align: right;">30 iters fijos</th>
+<th style="text-align: right;">Parada temprana ε=0.5</th>
+<th style="text-align: right;">Δ</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Presión</td>
+<td style="text-align: right;">60.45 ms/tick</td>
+<td style="text-align: right;"><strong>40.99 ms/tick</strong></td>
+<td style="text-align: right;"><strong>-32.2 %</strong> ✓</td>
+</tr>
+<tr>
+<td>Avg iters/call</td>
+<td style="text-align: right;">30</td>
+<td style="text-align: right;"><strong>18.07</strong></td>
+<td style="text-align: right;">-40 %</td>
+</tr>
+<tr>
+<td>BURNING tick 100</td>
+<td style="text-align: right;">2651</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;"><strong>-3.96 %</strong> ✓</td>
+</tr>
+<tr>
+<td>SMOKE tick 100</td>
+<td style="text-align: right;">19357</td>
+<td style="text-align: right;">21570</td>
+<td style="text-align: right;"><strong>+11.4 %</strong> ⚠️</td>
+</tr>
+<tr>
+<td>Latencia /tick total</td>
+<td style="text-align: right;">212.70 ms</td>
+<td style="text-align: right;">204.02 ms</td>
+<td style="text-align: right;">-4.1 %</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Cumple los criterios estrictos del issue:</strong> ≥25 % en presión y ±5 % en
+BURNING.</p>
+<h3 id="la-nota-sobre-smoke">La nota sobre SMOKE</h3>
+<p>SMOKE sube +11.4 % — fuera del ±5 % si lo aplicáramos también ahí. La
+explicación física: con menos correcciones de velocidad, el fluido es algo
+más divergente, el calor advecta más, las celdas BURNING transitan a SMOKE
+un poco antes. La población instantánea de BURNING se mantiene (cells siguen
+ardiendo), pero el ciclo BURNING → SMOKE se acelera ligeramente.</p>
+<p>El issue no pone tolerancia explícita a SMOKE; el criterio es BURNING. Lo
+flagueo aquí porque es una diferencia observable en la visualización.</p>
+<h3 id="hallazgo-respuesta-no-monotona-en">Hallazgo: respuesta NO monótona en ε</h3>
+<p>Sweep manual:</p>
+<table>
+<thead>
+<tr>
+<th>ε</th>
+<th style="text-align: right;">avg iters</th>
+<th style="text-align: right;">Presión ms/tick</th>
+<th style="text-align: right;">BURNING tick 100</th>
+<th style="text-align: right;">SMOKE tick 100</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 (cap fijo 30)</td>
+<td style="text-align: right;">30.00</td>
+<td style="text-align: right;">60.45</td>
+<td style="text-align: right;">2651</td>
+<td style="text-align: right;">19357</td>
+</tr>
+<tr>
+<td>0.1</td>
+<td style="text-align: right;">23.61</td>
+<td style="text-align: right;">53.06</td>
+<td style="text-align: right;">2649</td>
+<td style="text-align: right;">21388</td>
+</tr>
+<tr>
+<td><strong>0.3</strong></td>
+<td style="text-align: right;"><strong>20.03</strong></td>
+<td style="text-align: right;"><strong>44.41</strong></td>
+<td style="text-align: right;"><strong>4563 (+72 %)</strong></td>
+<td style="text-align: right;">22870</td>
+</tr>
+<tr>
+<td>0.5</td>
+<td style="text-align: right;">18.07</td>
+<td style="text-align: right;">40.99</td>
+<td style="text-align: right;">2546</td>
+<td style="text-align: right;">21570</td>
+</tr>
+</tbody>
+</table>
+<p>ε=0.3 dispara BURNING a 4563 — rompe la propagación. El sistema tiene
+regímenes inestables: ciertas combinaciones de "corte casi convergido" + el
+acoplamiento no-lineal de la transición FUEL → BURNING (umbral de 100 °C)
+producen frentes muy distintos.</p>
+<p><strong>Implicación práctica:</strong> el valor ε=0.5 está validado empíricamente, pero
+cualquier futura optimización del solver de presión (precomputar
+divergencia, SOR, multigrid, vectorización) debe <strong>revalidar</strong> con bench a
+100 ticks. No es seguro asumir continuidad numérica.</p>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>engine/presion.h</code> — <code>resolverPresion</code> ahora devuelve <code>int</code> (iters
+  realizadas), acepta <code>epsilon</code> (default 0.5), trackea <code>max_diff</code> durante
+  el barrido y rompe el bucle al converger.</li>
+<li><code>engine/simulacion.h</code> — Profile añade <code>presion_iters</code> y <code>presion_calls</code>.
+  <code>tick()</code> captura el retorno de <code>resolverPresion</code> y los acumula.</li>
+<li><code>engine/main.cpp</code> — STATS emite los dos campos nuevos.</li>
+<li><code>api/motor.py</code> — <code>_CAMPOS_STATS</code> extendido.</li>
+<li><code>api/headless_bench.py</code> — <code>formatear_perfil</code> muestra "iters totales /
+  llamadas = avg iters/call" tras la tabla de fases.</li>
+<li><code>engine/test_simulacion.cpp</code> — snapshot del determinismo numérico
+  re-capturado para reflejar el nuevo punto de operación (ε=0.5 sobre
+  warm-start). Histórico de revalidaciones documentado en el comentario
+  del test.</li>
+<li><code>engine/test_main.sh</code> y <code>engine/test_simulacion.cpp</code> — verifican los
+  campos <code>presion_iters</code>/<code>presion_calls</code> y su acotación por <code>iters_max *
+  calls</code>.</li>
+</ul>
+<h2 id="tests">Tests</h2>
+<ul>
+<li>44/44 API (todos siguen verde, ahora STATS valida los nuevos campos).</li>
+<li>Motor: <code>test_main.sh</code> 22, <code>test_simulacion.sh</code> 32, <code>test_world_loader.sh</code>
+  18, <code>test_buoyancy/reaccion/serializar</code> OK.</li>
+</ul>
+<h2 id="trabajo-futuro-pendiente-que-esta-issue-no-toca">Trabajo futuro pendiente que esta issue NO toca</h2>
+<ol>
+<li>
+<p><strong>Precomputar divergencia</strong> (<a href="optimizacion-paralelismo-y-coste.html">#66</a>):
+   <code>calcularDivergencia(g,x,y,z)</code> se llama dentro del bucle de iteraciones
+   pero la velocidad <strong>no</strong> cambia durante Jacobi (lo dice el propio
+   comentario del fichero). Levantarla del bucle elimina ~6 lookups + 6
+   isValid por celda por iter. Es el camino más limpio para reducir más sin
+   tocar la numérica — mantiene los valores bit a bit.</p>
+</li>
+<li>
+<p><strong>Solver más rápido</strong>: SOR (Successive Over-Relaxation) con ω≈1.7
+   convergería mucho antes que Jacobi puro. Multigrid sería la siguiente
+   etapa. Fuera del scope del milestone actual.</p>
+</li>
+</ol>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optimización — `#62` — Profiling fino para confirmar dominantes · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Optimización — `#62` — Profiling fino para confirmar dominantes</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="optimizacion-paralelismo-y-coste.html">Optimización — Paralelismo y Coste</a> · <a href="optimizacion-61-benchmark-reproducible.html">Optimización — 61 — Benchmark reproducible</a></p>
+<h2 id="por-que-esta-issue-existe">Por qué esta issue existe</h2>
+<p>El <a href="optimizacion-paralelismo-y-coste.html">CONTEXT del milestone</a> hipotetiza que
+<code>resolverPresion()</code> con sus 30 iteraciones Jacobi domina el coste por tick.
+<strong>Antes</strong> de tocar el solver (issue #63) o paralelizar (issue #64), hay que
+confirmar la hipótesis con números reales y descartar sorpresas (advección,
+buoyancy, reacción, halos, etc.).</p>
+<h2 id="diseno">Diseño</h2>
+<p>Cuatro componentes:</p>
+<ol>
+<li>
+<p><strong>Motor C++:</strong> acumuladores <code>uint64_t</code> por fase en <code>Simulacion</code>. Cada
+   fase de <code>tick()</code> se envuelve con <code>std::chrono::steady_clock</code>. Reset
+   con <code>Simulacion::reset()</code>. Coste por sample ≈ 50 ns con <code>steady_clock</code>,
+   despreciable frente a ms/fase.</p>
+</li>
+<li>
+<p><strong>Protocolo motor:</strong> comando nuevo <code>STATS</code> que emite una línea
+   <code>STATS ticks=N buoyancy=ns presion=ns adveccion=ns reaccion=ns
+         sostener=ns halos=ns desact=ns act=ns</code>
+   No cambia ni <code>TICK</code> ni <code>CHANGED</code> ni <code>TICK_DONE</code> — la API existente sigue
+   compatible.</p>
+</li>
+<li>
+<p><strong>API Python:</strong> <code>motor.parse_stats()</code> (función pura) y <code>motor.stats()</code>
+   (envía <code>STATS</code> y devuelve dict). Endpoint <code>GET /stats</code>.</p>
+</li>
+<li>
+<p><strong><code>headless_bench.py</code>:</strong> al final del run hace una sola GET a <code>/stats</code>
+   y formatea una tabla ordenada por coste descendente, con ms/tick y %
+   del total. Una única llamada — no inflar <code>/tick</code>.</p>
+</li>
+</ol>
+<h3 id="por-que-la-instrumentacion-esta-siempre-on">Por qué la instrumentación está siempre on</h3>
+<p>La alternativa (compile-time <code>#ifdef</code>) era más invasiva y forzaba dos
+binarios. La medida empírica (sección siguiente) confirma overhead <strong>&lt;1%</strong>
+sobre la latencia total del tick — vale la pena dejarla siempre activa por
+simplicidad y porque permite añadir un endpoint <code>/stats</code> sin extra config.</p>
+<h2 id="resultado-del-bench-200-ticks-80-ticks-por-compromiso-de-tiempo">Resultado del bench (200 ticks → 80 ticks por compromiso de tiempo)</h2>
+<p>Mismo hardware (Ryzen 7 5800H), misma ignición central, mismo terreno:</p>
+<table>
+<thead>
+<tr>
+<th>Métrica</th>
+<th>#61 baseline (sin perfil)</th>
+<th>#62 (con perfil)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Latencia media <code>/tick</code></td>
+<td>123.54 ms</td>
+<td>124.39 ms</td>
+</tr>
+<tr>
+<td>Total 80 ticks</td>
+<td>9.97–10.08 s</td>
+<td>10.11 s</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Overhead del profiling: 0.69%</strong> — muy por debajo del 5% exigido.</p>
+<h3 id="desglose-por-fase-80-ticks-ignicion-central">Desglose por fase (80 ticks, ignición central)</h3>
+<table>
+<thead>
+<tr>
+<th>Fase</th>
+<th style="text-align: right;">ms/tick</th>
+<th style="text-align: right;">%</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>presion</strong></td>
+<td style="text-align: right;">42.64</td>
+<td style="text-align: right;"><strong>69.6%</strong></td>
+</tr>
+<tr>
+<td><strong>adveccion</strong></td>
+<td style="text-align: right;">17.23</td>
+<td style="text-align: right;"><strong>28.1%</strong></td>
+</tr>
+<tr>
+<td>buoyancy</td>
+<td style="text-align: right;">0.70</td>
+<td style="text-align: right;">1.1%</td>
+</tr>
+<tr>
+<td>desact</td>
+<td style="text-align: right;">0.19</td>
+<td style="text-align: right;">0.3%</td>
+</tr>
+<tr>
+<td>reaccion</td>
+<td style="text-align: right;">0.18</td>
+<td style="text-align: right;">0.3%</td>
+</tr>
+<tr>
+<td>act</td>
+<td style="text-align: right;">0.17</td>
+<td style="text-align: right;">0.3%</td>
+</tr>
+<tr>
+<td>sostener</td>
+<td style="text-align: right;">0.11</td>
+<td style="text-align: right;">0.2%</td>
+</tr>
+<tr>
+<td>halos</td>
+<td style="text-align: right;">0.07</td>
+<td style="text-align: right;">0.1%</td>
+</tr>
+<tr>
+<td><strong>total CPU</strong></td>
+<td style="text-align: right;">61.29</td>
+<td style="text-align: right;">100.0%</td>
+</tr>
+</tbody>
+</table>
+<p>Sumar las fases da ~61 ms/tick. La latencia HTTP medida por <code>/tick</code> es
+~124 ms/tick, así que la otra mitad se va en <strong>I/O + serialización</strong>:
+emitir las líneas <code>CHANGED</code> por stdout, leerlas en Python, JSON. Eso ya
+está fuera del solver físico y se mejora con #59 (filtrar diffs) y/o
+agrupando lectura.</p>
+<h2 id="conclusion">Conclusión</h2>
+<ol>
+<li><strong><code>resolverPresion()</code> es el dominante</strong> — 70% del coste físico. La
+   hipótesis del milestone se confirma. Issue #63 (reducir iteraciones
+   Jacobi / parada temprana) ataca aquí.</li>
+<li><strong><code>advectar()</code> es el segundo gran ladrillo</strong> — 28%. No estaba en el
+   radar inicial. Si #63 baja presión un 25%, advección pasará a ser
+   relativamente más cara (~33%) y tocará re-mirarla.</li>
+<li><strong>El resto es ruido</strong> (&lt;2.4% combinado). No tocar — riesgo &gt; recompensa.</li>
+<li><strong>Paralelizar el bucle de cuadrantes (#64) sigue siendo la palanca grande</strong>
+   porque presión + advección son perfectamente paralelas por cuadrante.
+   Si se reparten en 8 cores con un 70% de eficiencia, el tick pasaría de
+   124 ms a ~30 ms (incluyendo I/O).</li>
+</ol>
+<h2 id="tests-anadidos">Tests añadidos</h2>
+<ul>
+<li><code>engine/test_main.sh</code> — caso 4: protocolo <code>STATS</code> con todos los campos,
+  <code>ticks=2</code> tras dos <code>TICK</code>, <code>ticks=0</code> tras <code>RESET</code>.</li>
+<li><code>engine/test_simulacion.cpp</code> — <code>test_profile_acumula_y_se_resetea</code> valida
+  acumulación y reset desde la API C++ directamente.</li>
+<li><code>api/test_motor.py</code> — 5 tests: <code>parse_stats</code> puro (caso completo, campos
+  desconocidos, error), <code>stats()</code> integración (sin motor → ceros, con ticks
+  → acumula, tras reset → ceros).</li>
+<li><code>api/test_endpoints.py</code> — <code>GET /stats</code> sin actividad (ceros) y tras 2 ticks
+  (<code>ticks=2</code>, <code>presion&gt;0</code>).</li>
+<li><code>api/test_headless_bench.py</code> — <code>formatear_perfil</code> (sin ticks → mensaje,
+  con datos → orden descendente y porcentajes correctos).</li>
+</ul>
+<p>Total tests: <strong>44</strong> en API (era 34) + <strong>20+30+18</strong> scripts del motor + 3
+binarios. Cero regresiones en los anteriores.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

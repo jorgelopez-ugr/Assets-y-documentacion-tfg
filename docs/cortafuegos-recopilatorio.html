@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortafuegos — Recopilatorio del milestone · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Cortafuegos — Recopilatorio del milestone</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="cortafuegos-69-comando-firebreak-batch.html">Cortafuegos — 69 — Comando FIREBREAK_BATCH</a> · <a href="cortafuegos-70-delete-y-restore-en-reset.html">Cortafuegos — 70 — DELETE y restore en reset</a> · <a href="cortafuegos-71-endpoints-api.html">Cortafuegos — 71 — Endpoints API</a> · <a href="cortafuegos-72-e2e-y-validacion-narrativa.html">Cortafuegos — 72 — E2E y validación narrativa</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>4 issues, 4 PRs, todas cerradas en una sola rama</strong> (<code>pintables-godot</code>).</li>
+<li><strong>Hipótesis física verificada</strong>: una franja de 30 celdas contiene
+  100 % en el corredor central; una de 3 celdas sólo desvía un 23 %.</li>
+<li><strong>El motor no cambió en su solver</strong>: la mecánica de propagación
+  por convección a través de aire pintado sale "gratis" del solver
+  Stam/Nvidia preexistente.</li>
+<li><strong>Sólo se añade superficie de control</strong>: dos comandos del protocolo
+  (FIREBREAK_BATCH, FIREBREAK_UNDO_BATCH), dos endpoints HTTP
+  (POST/DELETE /firebreak), una estructura de miguitas para deshacer.</li>
+</ul>
+<h2 id="las-4-issues-del-milestone">Las 4 issues del milestone</h2>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Capa</th>
+<th>Aporte</th>
+<th style="text-align: right;">Tests añadidos</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="cortafuegos-69-comando-firebreak-batch.html">#69</a></td>
+<td>motor C++</td>
+<td><code>pintar_firebreak</code>, mapa de miguitas, comando <code>FIREBREAK_BATCH</code></td>
+<td style="text-align: right;">+5 protocolo, +22 unit</td>
+</tr>
+<tr>
+<td><a href="cortafuegos-70-delete-y-restore-en-reset.html">#70</a></td>
+<td>motor C++</td>
+<td><code>deshacer_firebreak</code>, <code>reset()</code> que restaura miguitas</td>
+<td style="text-align: right;">+4 protocolo, +20 unit</td>
+</tr>
+<tr>
+<td><a href="cortafuegos-71-endpoints-api.html">#71</a></td>
+<td>API HTTP</td>
+<td><code>POST/DELETE /firebreak</code>, validación pydantic</td>
+<td style="text-align: right;">+6 wrapper, +9 endpoint</td>
+</tr>
+<tr>
+<td><a href="cortafuegos-72-e2e-y-validacion-narrativa.html">#72</a></td>
+<td>E2E + narrativa</td>
+<td>Tests E2E + script <code>firebreak_validacion.py</code></td>
+<td style="text-align: right;">+4 E2E</td>
+</tr>
+</tbody>
+</table>
+<h2 id="hipotesis-fisica-que-se-demuestra">Hipótesis física que se demuestra</h2>
+<blockquote>
+<p><em>Si el cortafuegos es estrecho, el calor pasa por encima en celdas
+AIR y la propagación salta. Si es ancho, contiene el incendio.</em></p>
+</blockquote>
+<h3 id="por-que-sale-gratis-del-solver">Por qué sale "gratis" del solver</h3>
+<p><code>pintar_firebreak</code> con intensidad=1 convierte celdas FUEL a AIR
+(o crea AIR donde había FUEL en el SubGrid). El solver:</p>
+<ol>
+<li><code>aplicarBuoyancy()</code> empuja calor hacia arriba en BURNING/SMOKE.</li>
+<li><code>advectar()</code> lo transporta lateralmente por celdas AIR.</li>
+<li>La temperatura puede cruzar la franja por convección y reignitar
+   celdas FUEL al otro lado si supera <code>UMBRAL_ACTIVACION = 100°C</code>.</li>
+</ol>
+<p>No hay nada nuevo en el solver para esta feature: lo que hace el
+milestone es darle al usuario el botón para anular <code>fuel_coefficient</code>
+en celdas concretas y observar la consecuencia natural.</p>
+<h2 id="datos-del-bench-narrativo">Datos del bench narrativo</h2>
+<p>Generados con <code>python3 api/firebreak_validacion.py --json out.json</code>
+(30 ticks, x_borde=290, ancho 3 vs 30, corredor z ∈ [272, 278]):</p>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">BURNING total</th>
+<th style="text-align: right;">corredor</th>
+<th style="text-align: right;">otro lado total</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sin franja (baseline)</td>
+<td style="text-align: right;">4 874</td>
+<td style="text-align: right;">39</td>
+<td style="text-align: right;">1 662</td>
+</tr>
+<tr>
+<td>Estrecha (3 celdas)</td>
+<td style="text-align: right;">4 644</td>
+<td style="text-align: right;"><strong>30</strong></td>
+<td style="text-align: right;">1 494</td>
+</tr>
+<tr>
+<td>Ancha (30 celdas)</td>
+<td style="text-align: right;">4 541</td>
+<td style="text-align: right;"><strong>0</strong></td>
+<td style="text-align: right;">615</td>
+</tr>
+</tbody>
+</table>
+<p>Lectura para gestores forestales:</p>
+<ul>
+<li><strong>Franja de 3 m</strong>: reduce el frente directo de 39 a 30 celdas. <strong>NO</strong>
+  contiene el incendio.</li>
+<li><strong>Franja de 30 m</strong>: contiene 100 % en la dirección de propagación
+  directa. Los 615 BURNING al otro lado total son por rodeo en Z
+  (geometría finita del bench), no por atravesar la franja.</li>
+</ul>
+<h2 id="decisiones-cerradas-durante-el-milestone">Decisiones cerradas durante el milestone</h2>
+<ol>
+<li><strong>Pincel = <code>FUEL → AIR</code></strong> (no toca BURNING/SMOKE). Decisión 1 del
+   HANDOFF: una motosierra no apaga incendios.</li>
+<li><strong>Granularidad continua</strong> <code>intensidad ∈ [0, 1]</code>. Pincel parcial
+   (intensidad &lt; 1) reduce fuel sin convertir a AIR — modela
+   rastrillado o podas.</li>
+<li><strong>Endpoint <code>/firebreak</code></strong> (no <code>/path</code>). Verbos REST: <code>POST</code> para
+   pintar, <code>DELETE</code> para deshacer.</li>
+<li><strong>Nivel B</strong>: el motor SIEMPRE acepta el comando, esté el cuadrante
+   activo o no. Si está activo, propaga el cambio al SubGrid; si no,
+   sólo modifica la copia estática.</li>
+<li><strong>Miguitas del original</strong>: la primera modificación de cada celda
+   guarda el fuel original. Repintar no sobrescribe la miguita,
+   permitiendo DELETE preciso aunque haya múltiples pasadas.</li>
+<li><strong>Formato del comando del motor</strong>: <code>FIREBREAK_BATCH &lt;I&gt; &lt;N&gt;</code> +
+   N líneas, no una línea por celda. Una brocha en Godot genera
+   cientos de celdas por trazo; batch evita saturar stdin.</li>
+<li><strong>DELETE con cuerpo JSON</strong> en vez de query string. Cuerpos pueden
+   llevar listas largas; query strings tienen límite y se ven feos.</li>
+<li><strong><code>/reset</code> restaura desde miguitas</strong>, no relee <code>world.dat</code>. El
+   motor es persistente y debe ser independiente del filesystem
+   tras arrancar.</li>
+<li><strong>Métrica del bench narrativo</strong>: BURNING en corredor central
+   <code>z ∈ [272, 278]</code>, no al otro lado total. Aisla el efecto del
+   cortafuegos del rodeo geométrico en Z.</li>
+</ol>
+<h2 id="cambios-en-el-repo">Cambios en el repo</h2>
+<h3 id="codigo-commiteado-en-pintables-godot">Código (commiteado en <code>pintables-godot</code>)</h3>
+<pre><code>engine/
+  main.cpp              FIREBREAK_BATCH + FIREBREAK_UNDO_BATCH
+  simulacion.h          pintar_firebreak, deshacer_firebreak,
+                        fuel_modificado_, reset() restaura
+  test_main.sh          +9 asserts del protocolo
+  test_simulacion.cpp   +14 funciones de test, +42 asserts
+
+api/
+  main.py               POST /firebreak, DELETE /firebreak
+  motor.py              pintar_firebreak, deshacer_firebreak wrappers
+  test_endpoints.py     +9 tests HTTP
+  test_motor.py         +6 tests wrapper
+  test_e2e.py           +4 tests E2E
+  firebreak_validacion.py  bench narrativo standalone (NUEVO)
+</code></pre>
+<h3 id="documentacion-tfg-vault-obsidian-local">Documentación TFG (vault Obsidian local)</h3>
+<pre><code>docs/docs-tfg/mvps/
+  Cortafuegos — #69 — Comando FIREBREAK_BATCH.md
+  Cortafuegos — #70 — DELETE y restore en reset.md
+  Cortafuegos — #71 — Endpoints API.md
+  Cortafuegos — #72 — E2E y validación narrativa.md
+  Cortafuegos — Recopilatorio.md   ← este documento
+</code></pre>
+<h2 id="resumen-de-tests-al-cierre">Resumen de tests al cierre</h2>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Inicio del milestone</th>
+<th style="text-align: right;">Cierre del milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">22 OK</td>
+<td style="text-align: right;"><strong>31 OK</strong> (+9)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">32 OK</td>
+<td style="text-align: right;"><strong>74 OK</strong> (+42)</td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">46 OK</td>
+<td style="text-align: right;"><strong>65 OK</strong> (+19)</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong>100 OK</strong></td>
+<td style="text-align: right;"><strong>170 OK</strong> (+70)</td>
+</tr>
+</tbody>
+</table>
+<p>70 asserts nuevos. Cero regresiones en los previos.</p>
+<h2 id="trabajo-futuro-no-es-de-este-milestone">Trabajo futuro (no es de este milestone)</h2>
+<ol>
+<li><strong>Sinergia con viento</strong> (próximo milestone). Un cortafuegos
+   perpendicular al viento dominante es más eficaz que uno paralelo.
+   El bench narrativo se enriquecerá cuando el motor tenga el campo
+   de viento.</li>
+<li><strong>GET /firebreaks</strong> para reconstruir el splat en Godot al
+   refrescar. Decisión cerrada en el HANDOFF: no entra en el MVP,
+   se evalúa en un milestone posterior si Godot lo necesita.</li>
+<li><strong>Mecánica de "bomberos"</strong> (echar agua sobre BURNING para bajar
+   temperatura). Es una feature distinta — el cortafuegos modifica
+   fuel, los bomberos modificarían temperatura. Decisión 1 del
+   HANDOFF lo deja explícitamente fuera de este milestone.</li>
+<li><strong>Optimización del coste de pintar lotes grandes</strong>. En la geometría
+   actual una franja barre ~1000 celdas; el motor tarda &lt; 1 ms en
+   procesarlas. No es prioritario, pero si el usuario pinta franjas
+   gigantes y la latencia se nota, considerar comprimir el batch.</li>
+</ol>
+<h2 id="conclusion">Conclusión</h2>
+<p>El milestone se cierra con la mecánica funcionando, validada
+empíricamente, documentada. La hipótesis del TFG ("el ancho importa")
+tiene un número concreto detrás: 30 m contiene 100 %, 3 m no.</p>
+<p>El siguiente milestone (viento) es bloqueante para enriquecer la
+narrativa del TFG, así que la primera tarea allí será documentar la
+convención de ejes motor/API/Godot — sin esa documentación, el campo
+de viento puede acabar empujando humo verticalmente en lugar de
+horizontalmente.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

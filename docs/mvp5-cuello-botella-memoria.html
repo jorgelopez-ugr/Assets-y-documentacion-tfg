@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 5 — Cuello de botella en memoria, no en CPU · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>MVP 5 — Cuello de botella en memoria, no en CPU</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="adveccion.html">adveccion</a> · <a href="presion.html">presion</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h2 id="sintoma">Síntoma</h2>
+<p>Tras cerrar el rediseño "Arquitectura de Cuadrantes" y verificar la propagación
+en Godot, el sistema empieza a frenar mucho antes de lo esperado:</p>
+<ul>
+<li>A ~34 000 celdas activas (≈ 7 cuadrantes), el tiempo por tick salta de
+  ~200 ms a ~2 000 ms.</li>
+<li>La CPU del proceso se mantiene al 3 %.</li>
+<li>Godot recibe los <code>/active_cells</code> cada vez más espaciados; el fuego se
+  ve "a tirones" en pantalla.</li>
+</ul>
+<p>La hipótesis natural ("la física es cara con tantas celdas") resultó falsa.</p>
+<hr>
+<h2 id="diagnostico">Diagnóstico</h2>
+<p>Cada tick, para cada cuadrante activo, <code>engine/adveccion.h</code> hace:</p>
+<pre><code class="language-cpp">Grid advectar(const Grid&amp; g, float dt) {
+    Grid adelante  = g;   // copia ~5 MB del SubGrid
+    Grid atras     = g;   // copia ~5 MB
+    Grid resultado = g;   // copia ~5 MB
+    ...
+    return resultado;     // copia más al retornar
+}
+</code></pre>
+<p>Y <code>engine/presion.h::iterarJacobi</code> es peor:</p>
+<pre><code class="language-cpp">static Grid iterarJacobi(const Grid&amp; g, int iteraciones) {
+    Grid actual    = g;   // copia
+    Grid siguiente = g;   // copia
+    for (int i = 0; i &lt; iteraciones; ++i) {
+        ...
+        actual = siguiente;   // ¡copia ~5 MB en cada iteración!
+    }
+    return actual;
+}
+</code></pre>
+<p>Con 30 iteraciones Jacobi y 7 cuadrantes activos, son del orden de 7 × 30 ≈
+210 copias de 5 MB <strong>solo</strong> en el solver de presión, por tick.</p>
+<p>El CPU está al 3 % porque la operación dominante no es aritmética: es mover
+~150 MB/tick por la jerarquía de cachés. <strong>El cuello de botella es ancho de
+banda de memoria</strong>, no la física.</p>
+<hr>
+<h2 id="baseline-medida-issue-45">Baseline medida (issue #45)</h2>
+<p>Con <code>tools/bench_tick.py</code> (warmup=1, ticks=4, igniciones en centros de
+cuadrante separados 200 m):</p>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">N pedido</th>
+<th style="text-align: right;">N real</th>
+<th style="text-align: right;">tick medio (ms)</th>
+<th style="text-align: right;">tick p95 (ms)</th>
+<th style="text-align: right;">tick min (ms)</th>
+<th style="text-align: right;">tick max (ms)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">52.23</td>
+<td style="text-align: right;">59.71</td>
+<td style="text-align: right;">47.79</td>
+<td style="text-align: right;">59.71</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">229.55</td>
+<td style="text-align: right;">265.54</td>
+<td style="text-align: right;">215.25</td>
+<td style="text-align: right;">265.54</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">450.92</td>
+<td style="text-align: right;">533.23</td>
+<td style="text-align: right;">417.78</td>
+<td style="text-align: right;">533.23</td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">640.65</td>
+<td style="text-align: right;">1042.05</td>
+<td style="text-align: right;">435.47</td>
+<td style="text-align: right;">1042.05</td>
+</tr>
+</tbody>
+</table>
+<p>Confirma el comportamiento: el tiempo crece de forma aproximadamente lineal
+con el número de cuadrantes activos, lo que es la huella de un coste por
+cuadrante (las copias de SubGrid) y no de un coste sublineal (acceso a memoria
+con buena localidad).</p>
+<p>A 10 cuadrantes activos ya estamos en el límite del criterio de cierre del
+MVP (&lt;500 ms); con 20 lo doblamos.</p>
+<h3 id="resultado-tras-46-refactor-de-adveccionh">Resultado tras #46 (refactor de adveccion.h)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">N</th>
+<th style="text-align: right;">baseline (ms)</th>
+<th style="text-align: right;">post #46 (ms)</th>
+<th style="text-align: right;">mejora</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">52.23</td>
+<td style="text-align: right;">48.39</td>
+<td style="text-align: right;">−7 %</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">229.55</td>
+<td style="text-align: right;">228.46</td>
+<td style="text-align: right;">−0.5 %</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">450.92</td>
+<td style="text-align: right;">421.84</td>
+<td style="text-align: right;"><strong>−6 %</strong></td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">640.65</td>
+<td style="text-align: right;">719.76</td>
+<td style="text-align: right;">~ruido en outliers (tick_min: 435 → 452)</td>
+</tr>
+</tbody>
+</table>
+<p>Mejora menor de la esperada. La hipótesis del documento de diseño asumía que
+advección y presión pesaban parecido, pero la cuenta real desmiente eso:</p>
+<ul>
+<li><code>adveccion.h</code> hacía 3 copias del SubGrid por llamada → ≈ 5.4 MB por cuadrante por tick.</li>
+<li><code>presion.h</code> hace <strong>una copia por iteración del Jacobi × 30 iteraciones</strong> → ≈ 54 MB por cuadrante por tick.</li>
+</ul>
+<p>Es decir, presión pesa ~10× más que advección. Eliminando solo las 3 copias
+de advección, el ahorro total es ~10 % del coste de memoria de un tick — y
+eso es justo lo que hemos medido.</p>
+<p>Lo bueno: el refactor es físicamente correcto (snapshot bit-perfect en
+<code>test_simulacion.cpp::test_determinismo_numerico_adveccion</code>) y deja el
+patrón listo para aplicarlo igual en presión.</p>
+<h3 id="resultado-tras-47-refactor-de-presionh">Resultado tras #47 (refactor de presion.h)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;">N</th>
+<th style="text-align: right;">baseline</th>
+<th style="text-align: right;">post #46</th>
+<th style="text-align: right;">post #47</th>
+<th style="text-align: right;">tick_min baseline → #47</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">1</td>
+<td style="text-align: right;">52.23</td>
+<td style="text-align: right;">48.39</td>
+<td style="text-align: right;">46.87</td>
+<td style="text-align: right;">47.79 → 41.25</td>
+</tr>
+<tr>
+<td style="text-align: right;">5</td>
+<td style="text-align: right;">229.55</td>
+<td style="text-align: right;">228.46</td>
+<td style="text-align: right;">221.06</td>
+<td style="text-align: right;">215.25 → 202.34</td>
+</tr>
+<tr>
+<td style="text-align: right;">10</td>
+<td style="text-align: right;">450.92</td>
+<td style="text-align: right;">421.84</td>
+<td style="text-align: right;"><strong>436.38</strong></td>
+<td style="text-align: right;">417.78 → 405.35</td>
+</tr>
+<tr>
+<td style="text-align: right;">20</td>
+<td style="text-align: right;">640.65</td>
+<td style="text-align: right;">719.76</td>
+<td style="text-align: right;">707.08</td>
+<td style="text-align: right;">435.47 → 446.34</td>
+</tr>
+</tbody>
+</table>
+<p>(Tiempos en ms.)</p>
+<p><strong>Criterio del milestone MVP 5</strong> ("&lt;500 ms con 10 cuadrantes activos"):
+<strong>cumplido</strong> — 436 ms con N=10.</p>
+<p><strong>Mejora real total #46+#47</strong>: ~3 % en media, ~3 % en <code>tick_min</code>. Mucho
+menor que el ~30 % esperado.</p>
+<h2 id="la-hipotesis-original-era-incorrecta">La hipótesis original era incorrecta</h2>
+<p>El documento de diseño asumía que las copias de SubGrid (3 en <code>adveccion.h</code>,
+30 en el Jacobi de <code>presion.h</code>) eran el cuello de botella. La medición
+desmiente eso: eliminadas todas, el tick apenas mejora un 3 %.</p>
+<p>Posibles causas reales del coste, hipótesis sin confirmar:</p>
+<ol>
+<li><strong><code>std::function</code> en <code>adveccion.h</code></strong>: cada celda hace ~9 llamadas a
+   <code>semiLagrangiano</code> por tick, y cada una construye un <code>std::function</code>
+   nuevo y dispatcha indirectamente 8 veces dentro de <code>interpolar</code>. Con
+   50 000 celdas son ~3.6 M llamadas indirectas por cuadrante por tick.</li>
+<li><strong>Cache layout de <code>Celda</code></strong> (~40 bytes): los accesos a vecinos en
+   X/Y/Z saltan líneas de caché. Un layout SoA (Structure of Arrays)
+   por campo sería mucho más amigable a la caché.</li>
+</ol>
+<p>Ninguna de las dos se ataca con buffers reutilizables. Quedan para una
+iteración posterior.</p>
+<h2 id="por-que-48-adveccion-parcial-queda-pospuesta">Por qué #48 (advección parcial) queda pospuesta</h2>
+<h1 id="48-proponia-saltar-la-adveccion-en-celdas-fuel-frias-t-25-c">48 proponía saltar la advección en celdas <code>FUEL</code> frías (T &lt; 25 °C).</h1>
+<p>Tenía sentido como red de seguridad si el milestone no se cumplía.</p>
+<p>Como <strong>el milestone sí se cumple</strong> (436 ms &lt; 500 ms con N=10), no hay
+urgencia. Y, al no ser las copias el dominante, no hay garantía de
+que saltar celdas baje los tiempos en la proporción esperada — habría
+que medirlo. Mejor abordarlo como parte de una iteración de
+optimización dedicada, no como parche del MVP 5.</p>
+<h1 id="48-queda-cerrada-como-pospuesta-y-se-traslada-a-un-milestone">48 queda <strong>cerrada como pospuesta</strong> y se traslada a un milestone</h1>
+<p>propio en <code>future-design-decissions.md</code>.</p>
+<h2 id="lo-que-si-se-ha-conseguido-en-mvp-5">Lo que sí se ha conseguido en MVP 5</h2>
+<ul>
+<li>Bench reproducible (<code>tools/bench_tick.py</code>) — primer mecanismo de
+  medición objetiva de rendimiento del motor.</li>
+<li>Refactor limpio de <code>adveccion.h</code> y <code>presion.h</code>: buffers
+  reutilizables en <code>Simulacion</code>, cero allocs por llamada.</li>
+<li>Determinismo numérico bit-perfect (<code>test_determinismo_numerico_adveccion</code>).</li>
+<li>Diagnóstico empírico que invalida la hipótesis original y abre la
+  vía a las dos hipótesis nuevas (std::function, cache layout).</li>
+<li>El criterio cuantitativo del milestone se cumple sin tocar más.</li>
+</ul>
+<blockquote>
+<p>Lección: los refactors "obvios" basados en lectura de código pueden
+resultar marginales si la intuición del cuello de botella es errónea.
+Sin la baseline de #45 habríamos asumido que la mejora era grande.</p>
+</blockquote>
+<h3 id="resultado-tras-47-refactor-de-presionh_1">Resultado tras #47 (refactor de presion.h)</h3>
+<p><em>Pendiente. Si tras #47 no se cumple el &lt;500 ms con 10 cuadrantes, abrir
+ (issue #48).</em></p>
+<hr>
+<h2 id="plan-de-ataque">Plan de ataque</h2>
+<ol>
+<li><strong>#45</strong> (cerrada con este documento): herramienta de medición reproducible.</li>
+<li><strong>#46</strong>: eliminar las copias de SubGrid en <code>adveccion.h</code> usando buffers
+   pre-allocated en <code>Simulacion</code>.</li>
+<li><strong>#47</strong>: aplicar la misma estrategia en <code>presion.h</code> y, sobre todo,
+   sustituir el <code>actual = siguiente</code> del bucle Jacobi por <code>std::swap</code> para
+   eliminar las copias por iteración.</li>
+<li><strong>#48</strong> (red de seguridad): si tras #47 sigue por encima de 500 ms con
+   10 cuadrantes, saltar la advección en celdas FUEL frías (T &lt; 25 °C).</li>
+</ol>
+<p>Los cuadrantes se procesan secuencialmente, así que un único set de buffers
+en <code>Simulacion</code> (compartido entre cuadrantes dentro del mismo tick) es
+suficiente — no hace falta uno por cuadrante.</p>
+<hr>
+<h2 id="leccion-general">Lección general</h2>
+<blockquote>
+<p>Cuando la CPU está ociosa y el reloj de pared crece, mira el ancho de
+banda de memoria antes de tocar la lógica.</p>
+</blockquote>
+<p>Antes de este MVP la intuición era "la física es cara". El profiler no
+hacía falta; bastaba observar la CPU al 3 %. Con esa pista, leer las firmas
+<code>Grid foo(const Grid&amp; g)</code> que devuelven por valor identifica el problema
+en minutos.</p>
+<p>Documentado también en:
+- <code>.userhub/design-decissions/design-mvp5-optimizacion-memoria.md</code>
+- <code>.userhub/design-decissions/future-design-decissions.md</code> — sección MVP 5</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP — Arquitectura de Cuadrantes · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP — Arquitectura de Cuadrantes</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a></p>
+<h2 id="objetivo">Objetivo</h2>
+<p>Rediseño arquitectónico completo del motor. El sistema anterior tenía un
+grid monolítico de 100×10×100 (~16 m² por celda), procesaba todas las
+celdas en cada tick y enviaba el estado completo en JSON. El rediseño:</p>
+<ul>
+<li>Trocea el terreno en <strong>cuadrantes</strong> activables dinámicamente.</li>
+<li>Sube la resolución a <strong>1×1 m</strong> horizontal (50.000 celdas por cuadrante).</li>
+<li>Sustituye el JSON completo por un protocolo de <strong>comandos texto</strong> con
+  <code>CHANGED</code> solo para celdas que han cambiado.</li>
+<li>Precomputa offline todo lo estático del terreno en <code>data/world.dat</code>.</li>
+</ul>
+<p>No añade features visibles para el usuario final — corrige el modelo
+mental y desbloquea simulaciones grandes sin hacer estallar la red ni la
+RAM.</p>
+<hr>
+<h2 id="la-arquitectura-nueva">La arquitectura nueva</h2>
+<pre><code>[OFFLINE — una vez]
+heightmap_16bit.png
+        ↓
+[[build_world]]  →  data/world.dat   (binario, ~11 MB, versionado)
+
+[RUNTIME]
+API arranca  →  motor C++ se lanza al primer comando, carga world.dat
+        ↓
+POST /ignite       →  IGNITE wx wz       →  activa cuadrante, BURNING
+POST /tick         →  TICK                →  procesa solo activos
+                                          →  CHANGED + TICK_DONE
+GET /active_cells  →  acumulador en memoria filtra a BURNING + SMOKE
+POST /reset        →  RESET               →  limpia estado dinámico
+</code></pre>
+<p>Detalle: <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> ·
+<a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="protocolo-del-motor.html">Protocolo del Motor</a>.</p>
+<hr>
+<h2 id="issues-implementadas-milestone-arquitectura-de-cuadrantes">Issues implementadas (milestone "Arquitectura de Cuadrantes")</h2>
+<h3 id="38-toolsbuild_worldpy">#38 — <code>tools/build_world.py</code></h3>
+<p>Script offline que sustituye al antiguo <code>build_initial_state.py</code>. Genera
+<code>data/world.dat</code> desde <code>heightmap_16bit.png</code> con la información estática
+de los 896 cuadrantes (origen, vecinos Moore, pendiente, <code>y_superficie</code>,
+<code>fuel_coefficient</code>).</p>
+<p><strong>Archivos nuevos:</strong></p>
+<ul>
+<li><code>tools/build_world.py</code></li>
+<li><code>tools/test_build_world.py</code> — 13 asserts</li>
+<li><code>data/world.dat</code> — versionado, ~11 MB</li>
+</ul>
+<p><strong>Tests:</strong> 13/13. Cuentas clave: <code>1598 × 1393 = 2.226.014</code> celdas válidas
+exactas tras descontar bordes recortados.</p>
+<p>Ver: <a href="build-world.html">build_world</a>.</p>
+<hr>
+<h3 id="39-engineceldah-cuadranteh-worldh">#39 — <code>engine/celda.h + cuadrante.h + world.h</code></h3>
+<p>Estructuras de datos del rediseño. Sin lógica.</p>
+<p><strong>Cambios estructurales:</strong></p>
+<ul>
+<li><code>EstadoCelda::EMPTY</code> → <code>AIR</code> (la realidad física no admite "vacío").</li>
+<li>Añadido <code>Vec2</code>.</li>
+<li>Nuevo <code>SubGrid</code> (50×50×20, lazy alloc) con la misma interfaz que el
+  antiguo <code>Grid</code> (<code>sizeX/sizeY/sizeZ</code>, <code>get</code>, <code>isValid</code>).</li>
+<li>Nuevo <code>Cuadrante</code> con datos estáticos + <code>SubGrid</code> dinámico.</li>
+<li>Nuevo <code>WorldData::cargar</code> que parsea <code>data/world.dat</code>.</li>
+</ul>
+<p><strong>Borrados</strong> (motor monolítico antiguo):</p>
+<ul>
+<li><code>engine/main.cpp</code> antiguo, <code>serializar.h</code>, sus tests, <code>test_integracion.sh</code>,
+  <code>test_propagacion.sh</code>.</li>
+</ul>
+<p><strong>Conservados sin cambios:</strong> <code>buoyancy.h</code>, <code>reaccion.h</code>, <code>adveccion.h</code>,
+<code>presion.h</code>. Compatibilidad mediante <code>using Grid = SubGrid;</code> en el nuevo
+<code>grid.h</code>.</p>
+<p><strong>Tests:</strong> 18/18 — <code>engine/test_world_loader.{cpp,sh}</code>.</p>
+<p>Ver: <a href="celda.html">celda</a> · <a href="cuadrante.html">cuadrante</a> · <a href="world.html">world</a>.</p>
+<hr>
+<h3 id="40-enginesimulacionh">#40 — <code>engine/simulacion.h</code></h3>
+<p>El corazón del nuevo motor. Clase <code>Simulacion</code> con <code>activar</code>, <code>ignite</code>,
+<code>tick</code>, <code>reset</code>, y los métodos privados <code>propagar_halos</code>,
+<code>evaluar_activacion</code>, <code>evaluar_desactivacion</code>, <code>sostener_burning</code>.</p>
+<p><strong>Decisiones críticas:</strong></p>
+<ul>
+<li>Orden de un tick: física por cuadrante → halos → desactivar → activar.
+  Desactivar <strong>antes</strong> de activar para que vecinos recién encendidos
+  sobrevivan al tick.</li>
+<li>Una celda BURNING es un <strong>emisor sostenido</strong>: tras la advección que la
+  drena, <code>sostener_burning</code> reinyecta <code>TEMP_IGNICION = 800 °C</code>.</li>
+<li>Un cuadrante con <code>temp &gt; UMBRAL_ACTIVACION (100 °C)</code> cuenta como
+  "activo" aunque no tenga BURNING — necesario para que un vecino recién
+  recibido por halo no se desactive antes de ignitar.</li>
+</ul>
+<p><strong>Tests:</strong> 18/18 — <code>engine/test_simulacion.{cpp,sh}</code>.</p>
+<p>Ver: <a href="simulacion.html">simulacion</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> ·
+<a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a>.</p>
+<hr>
+<h3 id="41-enginemaincpp-bucle-stdin">#41 — <code>engine/main.cpp</code> — bucle stdin</h3>
+<p>El binario del motor. Carga <code>data/world.dat</code>, construye <code>Simulacion</code>, y
+entra en bucle leyendo comandos por stdin.</p>
+<pre><code class="language-cpp">while (getline(cin, linea)) {
+    if (cmd == &quot;IGNITE&quot;) sim.ignite(wx, wz);
+    if (cmd == &quot;TICK&quot;)   {
+        sim.tick();
+        // emitir CHANGED para celdas con (state, temp) distintos
+        // del último valor emitido
+        cout &lt;&lt; &quot;TICK_DONE &quot; &lt;&lt; total &lt;&lt; &quot;\n&quot; &lt;&lt; flush;
+    }
+    if (cmd == &quot;RESET&quot;)  sim.reset();
+    if (cmd == &quot;QUIT&quot;)   break;
+}
+</code></pre>
+<p><strong>Caché por celda:</strong> <code>unordered_map&lt;uint64_t, LastEmit&gt;</code> con
+<code>UMBRAL_TEMP_CHANGED = 0.5 °C</code>. Solo viajan las celdas cuyo estado o
+temperatura han cambiado.</p>
+<p><strong>Tests:</strong> 8/8 — <code>engine/test_main.sh</code>.</p>
+<p>Ver: <a href="protocolo-del-motor.html">Protocolo del Motor</a>.</p>
+<hr>
+<h3 id="42-apimotorpy-statepy-mainpy">#42 — <code>api/motor.py + state.py + main.py</code></h3>
+<p>Adaptación de la API al nuevo protocolo.</p>
+<p><strong>Reescritos por completo:</strong></p>
+<ul>
+<li><code>motor.py</code>: wrapper de <code>subprocess.Popen</code> con <code>ignite</code>, <code>tick</code>, <code>reset</code>,
+  <code>shutdown</code>. Parser de <code>CHANGED ... TICK_DONE</code>.</li>
+<li><code>state.py</code>: dict <code>(x, y, z) → celda</code> con <code>update_from_changed</code>,
+  <code>active_cells</code>, <code>all_non_air</code>. Sin carga inicial — el motor tiene
+  <code>world.dat</code>.</li>
+<li><code>main.py</code>: lifespan minimal, endpoints <code>/reset</code>, <code>/ignite</code>, <code>/tick</code>,
+  <code>/active_cells</code>, <code>/state</code>.</li>
+</ul>
+<p><strong>Nuevo:</strong></p>
+<ul>
+<li><code>conftest.py</code>: compila el motor antes de la sesión de tests si está
+  desactualizado, y aísla el estado entre tests.</li>
+</ul>
+<p><strong>Borrados:</strong> todos los tests antiguos del API (estaban acoplados al
+protocolo JSON).</p>
+<p><strong>Tests:</strong> 21/21 (4 ficheros). Detalle: <a href="arquitectura-api.html">Arquitectura API</a>.</p>
+<hr>
+<h3 id="43-verificacion-end-to-end">#43 — Verificación end-to-end</h3>
+<p><code>api/test_e2e.py</code> arranca la API con <code>TestClient</code>, ignita en el borde de un
+cuadrante (coordenada <code>(299.5, 275.5)</code> = celda <code>(49, 25)</code> del cuadrante
+<code>(5, 5)</code>), corre 20 ticks y verifica que aparecen celdas con <code>x ≥ 300</code> —
+prueba que el fuego ha cruzado al cuadrante <code>(6, 5)</code>.</p>
+<p><strong>Bug encontrado y arreglado en este E2E</strong> (en <code>simulacion.h</code>):
+<code>evaluar_desactivacion</code> desactivaba el vecino recién activado por halo,
+y al re-activarse se reinicializaba el SubGrid perdiendo el calor del
+halo. Ver <a href="evaluar-desactivacion-pisaba-halos.html">evaluar-desactivacion-pisaba-halos</a>.</p>
+<p><strong>Tests:</strong> 2/2 — <code>api/test_e2e.py</code>.</p>
+<p><strong>Limpieza adicional:</strong> borrados los scripts antiguos de <code>tools/</code>
+(<code>sim.py</code>, <code>build_initial_state.py</code>, <code>terrain_to_json.py</code> y sus tests),
+<code>data/initial_state.json</code> y <code>terrain_state.json</code>.</p>
+<hr>
+<h2 id="criterios-de-cierre-del-milestone">Criterios de cierre del milestone</h2>
+<ol>
+<li>✓ <code>data/world.dat</code> se genera, se versiona y el motor lo carga.</li>
+<li>✓ Motor compila a un binario que habla el nuevo protocolo.</li>
+<li>✓ El fuego ignitado en el borde de un cuadrante cruza al vecino y este
+     emite celdas BURNING vía <code>/active_cells</code>.</li>
+<li>✓ Suite completa verde: 80 asserts/tests entre <code>engine/</code>, <code>tools/</code> y
+     <code>api/</code>.</li>
+</ol>
+<hr>
+<h2 id="estado-al-cerrar-el-mvp">Estado al cerrar el MVP</h2>
+<pre><code>data/
+└── world.dat                       ← versionado, fuente de verdad estática
+
+tools/
+├── build_world.py                  ← único script offline
+└── test_build_world.py             ← 13 tests
+
+engine/
+├── celda.h                         ← AIR sustituye a EMPTY, Vec2 añadido
+├── cuadrante.h                     ← SubGrid + Cuadrante + EstadoCuadrante
+├── world.h                         ← WorldData::cargar
+├── simulacion.h                    ← bucle de cuadrantes activos
+├── grid.h                          ← typedef Grid = SubGrid (compatibilidad)
+├── main.cpp                        ← bucle stdin del nuevo protocolo
+├── buoyancy.h, reaccion.h          ← sin cambios
+├── adveccion.h, presion.h          ← sin cambios
+├── test_world_loader.{cpp,sh}      ← 18 asserts
+├── test_simulacion.{cpp,sh}        ← 18 asserts
+└── test_main.sh                    ← 8 asserts
+
+api/
+├── motor.py                        ← wrapper del nuevo protocolo
+├── state.py                        ← acumulador (x,y,z) → celda
+├── main.py                         ← endpoints HTTP
+├── conftest.py                     ← compila motor + aísla estado
+├── logger.py, test_logger.py       ← sin cambios
+├── test_motor.py                   ← 5 tests
+├── test_state.py                   ← 6 tests
+├── test_endpoints.py               ← 6 tests
+└── test_e2e.py                     ← 2 tests
+</code></pre>
+<hr>
+<h2 id="lo-que-no-entro-en-este-mvp">Lo que NO entró en este MVP</h2>
+<ul>
+<li><strong>Refactor de <code>adveccion.h</code>/<code>presion.h</code></strong>: siguen tomando <code>Grid&amp;</code>
+  (typedef de <code>SubGrid</code>) y haciendo 3 copias de SubGrid por tick por
+  cuadrante (~5 MB cada una). Refactorizable a operar in-place o sobre
+  scratch buffers reutilizables.</li>
+<li><strong>Refactor a hablar de <code>Cuadrante</code> directamente</strong>: las cabeceras de
+  física aún reciben <code>Grid&amp;</code>. Es deuda visible pero funcional.</li>
+<li><strong>Estado HALO real</strong>: la enum <code>EstadoCuadrante::HALO</code> existe pero no se
+  usa. La idea futura: cuadrantes que solo procesen su columna de borde
+  cuando un vecino activo esté ardiendo.</li>
+<li><strong>Integración hiperespectral</strong>: <code>fuel_coefficient</code> sigue hardcoded a
+  <code>1.0</code> para todo el DEM.</li>
+<li><strong>Caminos forestales / cortafuegos</strong>: requerirían vectores con
+  <code>fuel_coefficient = 0.0</code> específicos.</li>
+<li><strong>Optimización GPU</strong>: el motor sigue mono-hilo en CPU. A 1–10
+  cuadrantes activos no se nota; con incendios mayores podría hacer falta.</li>
+<li><strong>Godot</strong>: integrar <code>/active_cells</code> con la nueva resolución 1×1 m queda
+  como responsabilidad del usuario.</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peculiaridad: la propagación del fuego ocurre a través del solver de presión, no por contacto directo · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Peculiaridad: la propagación del fuego ocurre a través del solver de presión, no por contacto directo</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a></p>
+<p><strong>MVP afectado:</strong> MVP 4
+<strong>Archivos involucrados:</strong> <code>engine/presion.h</code> · <code>engine/adveccion.h</code> · <code>engine/reaccion.h</code></p>
+<hr>
+<h2 id="la-suposicion-intuitiva-incorrecta">La suposición intuitiva (incorrecta)</h2>
+<p>Al diseñar el estado FUEL y la transición <code>FUEL → BURNING</code>, la intuición natural es:</p>
+<blockquote>
+<p>"Una celda BURNING está caliente. Sus vecinas FUEL tocan la celda caliente. El calor se transfiere por contacto y las vecinas suben de temperatura."</p>
+</blockquote>
+<p>Esta intuición es correcta en física real, pero <strong>no describe cómo funciona este motor</strong>.</p>
+<p>El motor no implementa conducción térmica ni radiación. La única forma en que la temperatura se mueve entre celdas es a través del campo de velocidades mediante el esquema MacCormack de advección.</p>
+<hr>
+<h2 id="el-mecanismo-real">El mecanismo real</h2>
+<p>El pipeline de un tick es:</p>
+<pre><code>aplicarBuoyancy  →  resolverPresion  →  advectar  →  aplicarReaccion
+</code></pre>
+<p>El calor se transfiere a las celdas FUEL vecinas en tres pasos encadenados:</p>
+<h3 id="paso-1-buoyancy-crea-velocidad-ascendente-en-la-celda-burning">Paso 1: Buoyancy crea velocidad ascendente en la celda BURNING</h3>
+<pre><code>fuerza = A * temperature - B * density = 0.1 * 800 - 0 = 80
+velocity.z += 80
+</code></pre>
+<p>La celda BURNING adquiere velocidad hacia arriba (eje Z en el sistema del motor).
+Las celdas FUEL adyacentes siguen con velocity=(0,0,0).</p>
+<h3 id="paso-2-el-solver-de-presion-jacobi-corrige-el-campo-de-velocidades">Paso 2: El solver de presión (Jacobi) corrige el campo de velocidades</h3>
+<p>La celda BURNING con velocity.z=80 tiene divergencia positiva: el fluido "se expande" hacia arriba, violando la incompresibilidad del fluido simulado.</p>
+<p>El solver de Jacobi calcula un campo de presión que cancela esta divergencia. Tras varias iteraciones, la presión se propaga a las celdas vecinas. La corrección de velocidad para cada celda es:</p>
+<pre><code>v.x -= (p[x+1] - p[x-1]) / 2
+v.y -= (p[y+1] - p[y-1]) / 2
+v.z -= (p[z+1] - p[z-1]) / 2
+</code></pre>
+<p>Una celda FUEL adyacente al BURNING recibe un gradiente de presión que le da velocidad <strong>apuntando hacia la zona de combustión</strong> (el fluido que sube "arrastra" fluido desde los lados hacia el punto de origen).</p>
+<h3 id="paso-3-la-adveccion-maccormack-transporta-temperatura">Paso 3: La advección MacCormack transporta temperatura</h3>
+<p>El esquema semi-Lagrangiano pregunta: <em>¿de dónde viene la partícula de fluido que llega a esta celda?</em></p>
+<p>Para la celda FUEL adyacente, que ahora tiene velocity apuntando hacia el BURNING:</p>
+<pre><code>origen = posicion_fuel - dt * velocity_fuel
+</code></pre>
+<p>El origen queda dentro o cerca de la zona caliente. La interpolación trilineal devuelve una temperatura superior a 20°C — parte del calor del BURNING llega a la celda FUEL.</p>
+<p>Si esa temperatura supera los 100°C, <code>aplicarReaccion</code> transiciona <code>FUEL → BURNING</code>.</p>
+<hr>
+<h2 id="por-que-esto-importa-al-ajustar-parametros">Por qué esto importa al ajustar parámetros</h2>
+<p>El número de iteraciones Jacobi (<code>--iter</code>) controla cuánto se propaga la presión:
+- Pocas iteraciones → gradientes débiles → poco calor transferido → propagación lenta o nula
+- Muchas iteraciones → gradientes fuertes → más calor transferido → propagación más rápida</p>
+<p>El coeficiente de buoyancy (<code>A</code>) controla la intensidad de la fuente:
+- A alto → velocidad alta → advección transporta más calor, pero CFL puede violarse
+- A bajo → velocidad controlada → propagación estable pero lenta</p>
+<p>Para observar propagación con el estado real (params: k=2.0, dt=0.5, A=0.1, iter=5), la propagación existe pero es lenta. Con params de test (k=0.1, dt=0.1, A=0.01, iter=30), la propagación ocurre en el tick 8.</p>
+<hr>
+<h2 id="senal-que-lo-revelo">Señal que lo reveló</h2>
+<p>En el test de propagación (<code>test_propagacion.sh</code>), los ticks 1-7 mostraban <code>burning=1, fuel=6</code> sin cambio. Si la propagación fuera por contacto directo, habría ocurrido en el tick 1 o 2. El retraso de 7 ticks indicó que el mecanismo es indirecto y depende de que los campos de presión y velocidad converjan.</p>
+<hr>
+<h2 id="implicacion-para-futuros-cambios">Implicación para futuros cambios</h2>
+<p>Si en algún momento la propagación deja de funcionar:
+1. Revisar que el solver Jacobi tenga suficientes iteraciones (<code>--iter</code>)
+2. Verificar que el parámetro <code>dt</code> no viola CFL: <code>dt * max(velocity) &lt; 1 celda</code>
+3. Comprobar que buoyancy solo aplica a BURNING/SMOKE (no a FUEL — ver <a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a>)</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cortafuegos — `#72` — E2E y validación narrativa · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Cortafuegos — `#72` — E2E y validación narrativa</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="cortafuegos-69-comando-firebreak-batch.html">Cortafuegos — 69 — Comando FIREBREAK_BATCH</a> · <a href="cortafuegos-70-delete-y-restore-en-reset.html">Cortafuegos — 70 — DELETE y restore en reset</a> · <a href="cortafuegos-71-endpoints-api.html">Cortafuegos — 71 — Endpoints API</a> · <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Cuarta y última pieza del milestone "Cortafuegos pintables desde
+  Godot"</strong>: tests E2E HTTP + script de validación narrativa que
+  demuestra empíricamente la hipótesis física del milestone.</li>
+<li><strong>Hipótesis cumplida</strong>: una franja de <strong>30 celdas</strong> contiene 100 % en
+  el corredor central tras 30 ticks (0 BURNING). Una franja de <strong>3
+  celdas</strong> deja pasar (30 BURNING en el mismo corredor). El ancho
+  importa, y la diferencia es nítida.</li>
+<li><strong>Métrica narrativa</strong>: BURNING en el corredor <code>x &gt; x_franja_max ∧
+  z ∈ [272, 278]</code>. Restringir el corredor central evita contar
+  celdas que rodean la franja por los extremos en Z (artefacto
+  geométrico, no convección a través).</li>
+<li><strong>4 tests E2E nuevos</strong>: ancha contiene, estrecha deja pasar, DELETE
+  restaura propagación equivalente al baseline, /reset borra el efecto
+  del firebreak.</li>
+<li><strong>Script <code>api/firebreak_validacion.py</code></strong>: corre 3 escenarios (sin
+  franja, estrecha, ancha) y vuelca JSON con métricas. Hipótesis
+  evaluada en dos formas (estricta y relativa).</li>
+<li><strong>Cero regresiones</strong>: 31 motor + 74 motor + <strong>65 API</strong> (era 61, +4 E2E).</li>
+</ul>
+<h2 id="por-que-esta-issue-cierra-el-milestone">Por qué esta issue cierra el milestone</h2>
+<p>Las tres issues previas dejaron los tres componentes operativos
+(motor POST, motor DELETE/reset, API HTTP). #72 prueba que el sistema
+completo, integrado, demuestra la hipótesis física que justifica todo
+el trabajo:</p>
+<blockquote>
+<p><em>Si el cortafuegos es estrecho, el calor pasa por encima en celdas
+AIR y la propagación salta. Si es ancho, contiene el incendio.</em></p>
+</blockquote>
+<p>Sin esta verificación, la feature "funciona" mecánicamente pero no
+está validada como herramienta narrativa para gestores forestales.</p>
+<h2 id="geometria-del-bench-narrativo">Geometría del bench narrativo</h2>
+<pre><code>          z
+          │
+      350 │
+          │
+      290 ├─░░░░░░░░░░░░░░░░░░░░░ ← franja Z_MAX
+          │ ░░░ ░░░░░░░░░░░░░░░░░    
+          │ ░░░ ░░░░░░░░░░░░░░░░░    corredor de medición:
+   foco → ●░░░ ░░░░░░░░░░░░░░░░░    z ∈ [272, 278]
+          │ ░░░ ░░░░░░░░░░░░░░░░░    (banda central de 7 celdas)
+          │ ░░░ ░░░░░░░░░░░░░░░░░    
+      260 ├─░░░░░░░░░░░░░░░░░░░░░ ← franja Z_MIN
+          │
+          │     ↑                ↑
+          │  estrecha          ancha
+          │  3 celdas         30 celdas
+          │  x ∈ [290, 292]   x ∈ [290, 319]
+          └──┬──────────────────┬─────────► x
+             290               319
+</code></pre>
+<ul>
+<li><strong>Foco</strong>: ignición en (275, 275). Cuadrante (5, 5).</li>
+<li><strong>Franja</strong>: barre todo z ∈ [260, 290] (31 celdas de altura) — más de
+  lo que el incendio crece en Z en 30 ticks. Objetivo: forzar el paso
+  por la franja, no rodearla.</li>
+<li><strong>Corredor</strong>: z ∈ [272, 278] (7 celdas centradas en el foco). La
+  única forma de tener BURNING al otro lado en este corredor es
+  atravesar la franja directamente; rodearla en Z queda fuera de la
+  ventana de medición.</li>
+</ul>
+<h3 id="por-que-un-corredor-y-no-contar-al-otro-lado-entero">Por qué un "corredor" y no contar al otro lado entero</h3>
+<p>Primer intento del bench (sin corredor): la franja ancha y la
+estrecha daban diferencias mínimas (3429 vs 3430 BURNING al otro lado
+en una corrida de 30 ticks). El motor difunde calor por advección y a
+30 ticks el fuego rodea la franja por los extremos en Z.</p>
+<p>Restringir la medición al corredor central hace la métrica
+<strong>específica de la hipótesis</strong>: sólo cuenta el fuego que cruzó la
+franja por convección directa. Es el equivalente experimental de
+mirar una sola dirección de propagación en lugar de el disco
+completo.</p>
+<h2 id="resultados">Resultados</h2>
+<h3 id="bench-canonico-python3-apifirebreak_validacionpy">Bench canónico — <code>python3 api/firebreak_validacion.py</code></h3>
+<p>30 ticks, x_borde=290, ancho 3 vs 30, corredor z ∈ [272, 278]:</p>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">BURNING total</th>
+<th style="text-align: right;">BURNING corredor</th>
+<th style="text-align: right;">BURNING otro lado total</th>
+<th style="text-align: right;">tiempo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sin franja</td>
+<td style="text-align: right;">4 874</td>
+<td style="text-align: right;">39</td>
+<td style="text-align: right;">1 662</td>
+<td style="text-align: right;">6.6 s</td>
+</tr>
+<tr>
+<td>Estrecha (3 celdas)</td>
+<td style="text-align: right;">4 644</td>
+<td style="text-align: right;"><strong>30</strong></td>
+<td style="text-align: right;">1 494</td>
+<td style="text-align: right;">6.4 s</td>
+</tr>
+<tr>
+<td>Ancha (30 celdas)</td>
+<td style="text-align: right;">4 541</td>
+<td style="text-align: right;"><strong>0</strong></td>
+<td style="text-align: right;">615</td>
+<td style="text-align: right;">6.3 s</td>
+</tr>
+</tbody>
+</table>
+<p>Lectura:</p>
+<ul>
+<li><strong>Hipótesis estricta</strong> (ancha=0 ∧ estrecha&gt;0): <strong>CUMPLE</strong>.</li>
+<li><strong>Hipótesis relativa</strong> (estrecha ≥ 5× ancha): <strong>CUMPLE</strong> (30 ≥ 0).</li>
+<li>Los 615 BURNING al otro lado total con franja ancha vienen del
+  rodeo en Z (el fuego propaga por z &lt; 260 y z &gt; 290). En el
+  corredor central, donde se habría medido el "salto directo", la
+  franja contiene 100 %.</li>
+</ul>
+<h3 id="comparacion-con-bench-mas-corto-15-ticks-ancho-1-vs-30">Comparación con bench más corto (15 ticks, ancho 1 vs 30)</h3>
+<p>Para los tests pytest E2E, una versión más corta:</p>
+<table>
+<thead>
+<tr>
+<th>Escenario</th>
+<th style="text-align: right;">BURNING total</th>
+<th style="text-align: right;">BURNING corredor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Estrecha (1 celda)</td>
+<td style="text-align: right;">2 292</td>
+<td style="text-align: right;">58</td>
+</tr>
+<tr>
+<td>Ancha (30 celdas)</td>
+<td style="text-align: right;">1 811</td>
+<td style="text-align: right;"><strong>0</strong></td>
+</tr>
+</tbody>
+</table>
+<p>A 15 ticks el incendio aún no llega a los extremos de la franja en Z,
+así que la métrica más estricta (ancha = 0 al otro lado total) también
+se cumple. Por eso los tests E2E usan 15 ticks: rápidos y robustos.</p>
+<h2 id="tests">Tests</h2>
+<h3 id="apitest_e2epy-4-tests-nuevos"><code>api/test_e2e.py</code> — 4 tests nuevos</h3>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Cubre</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_e2e_franja_ancha_contiene_en_corredor</code></td>
+<td>30 celdas pintadas → 0 BURNING en corredor tras 15 ticks. Hipótesis estricta.</td>
+</tr>
+<tr>
+<td><code>test_e2e_franja_estrecha_deja_pasar</code></td>
+<td>1 celda pintada → &gt; 0 BURNING en corredor. La franja no contiene.</td>
+</tr>
+<tr>
+<td><code>test_e2e_delete_firebreak_restaura_propagacion</code></td>
+<td>Pintar + DELETE + ignite ≡ ignite limpio (deriva &lt; 1 %).</td>
+</tr>
+<tr>
+<td><code>test_e2e_reset_borra_efecto_de_firebreak</code></td>
+<td>Pintar + /reset + ignite ≡ ignite limpio (deriva &lt; 1 %).</td>
+</tr>
+</tbody>
+</table>
+<p>Los dos últimos garantizan que las dos vías de "deshacer" un
+cortafuegos (DELETE explícito o /reset implícito) producen el mismo
+estado que no haber pintado nunca.</p>
+<h3 id="resultados_1">Resultados</h3>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Antes (#71)</th>
+<th style="text-align: right;">Después (#72)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">61 OK</td>
+<td style="text-align: right;"><strong>65 OK</strong></td>
+</tr>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">31 OK</td>
+<td style="text-align: right;">31 OK (sin tocar)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">74 OK</td>
+<td style="text-align: right;">74 OK (sin tocar)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="cambios">Cambios</h2>
+<ul>
+<li><code>api/test_e2e.py</code>:</li>
+<li>4 tests E2E nuevos en una sección dedicada al milestone Cortafuegos.</li>
+<li>Helpers <code>_franja(x_min, x_max)</code> y <code>_burning_en_corredor(cells, x_max)</code>.</li>
+<li><code>api/firebreak_validacion.py</code> (nuevo, ~180 LOC):</li>
+<li>Script standalone que arranca un TestClient, corre tres escenarios
+    (sin franja, estrecha, ancha), mide BURNING total, en corredor y
+    al otro lado total, vuelca JSON y imprime tabla resumen.</li>
+<li>Argumentos: <code>--ticks</code>, <code>--x-borde</code>, <code>--ancho-estrecho</code>,
+    <code>--ancho-ancho</code>, <code>--json</code>. Defaults pensados para el bench
+    canónico de cierre del milestone.</li>
+</ul>
+<h2 id="decisiones-tomadas-durante-la-implementacion">Decisiones tomadas durante la implementación</h2>
+<ol>
+<li>
+<p><strong>El corredor central como métrica primaria</strong>. El primer diseño del
+   bench medía "BURNING al otro lado total" (todo <code>x &gt; x_franja_max</code>).
+   Pero a 30 ticks el fuego rodea la franja en Z y la métrica se
+   contamina. Restringir a un corredor de 7 celdas centradas en el
+   foco aísla el efecto del cortafuegos del efecto del rodeo.</p>
+</li>
+<li>
+<p><strong>Dos hipótesis evaluadas</strong>, no una. La estricta (ancha=0,
+   estrecha&gt;0) es binaria y limpia para tests automáticos. La
+   relativa (estrecha ≥ 5× ancha) admite goteo residual en la ancha
+   por errores numéricos de advección — útil si un cambio futuro al
+   solver introduce un poco de difusión sin invalidar la mecánica
+   física.</p>
+</li>
+<li>
+<p><strong>Tests E2E con 15 ticks</strong>, no 30. A 15 ticks la franja ancha
+   contiene 100 % por todo lado (ancha=0 al otro lado total y en el
+   corredor). Tests más rápidos (~1 s/escenario), menos ruido
+   geométrico, mismo poder de validación de la hipótesis.</p>
+</li>
+<li>
+<p><strong>Geometría asimétrica del foco hacia +X</strong>. La franja sólo está al
+   este (positive X). En un setup totalmente simétrico no cambiaría
+   la mecánica, pero forzar al fuego a propagar en una dirección
+   conocida hace los tests más específicos: si la métrica en el
+   corredor central tras la franja es 0, sabemos que es por la franja,
+   no por casualidad.</p>
+</li>
+<li>
+<p><strong><code>firebreak_validacion.py</code> como script standalone, no como test
+   pytest</strong>. El bench tarda ~20 s y produce un JSON de validación.
+   Encajarlo en pytest contaminaría una suite que se corre cientos de
+   veces al día. Un script aparte se invoca una vez al cerrar el
+   milestone (o al revisar regresiones físicas en el solver).</p>
+</li>
+<li>
+<p><strong>Reset entre escenarios dentro del mismo TestClient</strong>. Arrancar y
+   cerrar el motor entre escenarios añade ~0.5 s × 2 reinicios. Usar
+   <code>/reset</code> mantiene el motor caliente y la comparación entre
+   escenarios homogénea.</p>
+</li>
+</ol>
+<h2 id="lectura-para-el-tfg-gestores-forestales">Lectura para el TFG (gestores forestales)</h2>
+<p>El número que cuenta para el documento del TFG es:</p>
+<blockquote>
+<p><strong>Una franja de 30 metros de ancho contiene el 100 % del fuego en
+el corredor de propagación. Una franja de 3 metros sólo desvía el
+23 % (de 39 a 30 BURNING en el corredor). Una franja "del ancho de
+un sendero" no funciona como cortafuegos — necesitas anchura
+proporcional al combustible que rodea.</strong></p>
+</blockquote>
+<p>(El 23 % proviene de comparar 39 vs 30 BURNING en el corredor entre
+el baseline sin franja y la franja estrecha. La cifra exacta varía
+con la geometría y el viento, pero el orden de magnitud es la
+narrativa.)</p>
+<h2 id="conclusion">Conclusión</h2>
+<h1 id="72-cierra-el-milestone-cortafuegos-pintables-desde-godot">72 cierra el milestone "Cortafuegos pintables desde Godot":</h1>
+<ul>
+<li>[x] Test E2E completo: ignite + paint + tick → no BURNING en franja.</li>
+<li>[x] Test E2E inverso: tras DELETE + ignite, propagación equivalente al baseline.</li>
+<li>[x] Bench narrativo con dos escenarios (estrecha vs ancha).</li>
+<li>[x] Métrica calibrada para aislar el efecto físico (corredor central).</li>
+<li>[x] Hipótesis estricta cumplida.</li>
+<li>[x] Documentación TFG con números concretos.</li>
+</ul>
+<p><strong>Siguiente milestone</strong>: viento (ver <code>.claude/HANDOFF-viento.md</code>).
+La primera tarea de ese milestone es escribir <code>docs/convenciones-ejes.md</code>
+porque el viento depende de tener clara la convención de ejes
+motor/API/Godot.</p>
+<p>Ver también <a href="cortafuegos-recopilatorio.html">Cortafuegos — Recopilatorio</a> para el resumen del
+milestone completo.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

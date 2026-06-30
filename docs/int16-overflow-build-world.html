@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error: int16 overflow al calcular distancia² RGB en cargar_fuel_map · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Error: int16 overflow al calcular distancia² RGB en cargar_fuel_map</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a> · <a href="integracion-godot-motor-recopilatorio.html">Integracion Godot-Motor — Recopilatorio</a></p>
+<p><strong>Milestone afectado:</strong> Integración Godot-Motor (Fase 2 #81/#82)
+<strong>Archivos involucrados:</strong> <code>tools/build_world.py</code></p>
+<hr>
+<h2 id="el-sintoma">El síntoma</h2>
+<p>Al implementar <code>cargar_fuel_map()</code> en <code>tools/build_world.py</code> para
+leer las 7 capas hiperespectrales de <code>docs/references/color-*.png</code>,
+los porcentajes de píxeles matcheados salían absurdos:</p>
+<pre><code>[FUEL] color-terreno.png         matched 2098953 celdas (94.3%)
+[FUEL] color-vegetacion-alta.png matched 2147378 celdas (96.5%)
+[FUEL] color-vegetacion-baja.png matched 2170267 celdas (97.5%)
+[FUEL] color-pinus-helepensis.png matched 2073856 celdas (93.2%)
+[FUEL] color-encina.png          matched 2224838 celdas (99.9%)
+[FUEL] color-quejigo.png         matched 2223144 celdas (99.9%)
+[FUEL] color-camino.png          matched 2072566 celdas (93.1%)
+</code></pre>
+<p>Cada categoría matcheaba <strong>casi todo el mapa</strong> independientemente
+del color objetivo. Los colores agregados (verde, azul, rojo)
+podrían pasar por colisión con la ortofoto natural, pero el cian
+de Pinus matcheando 93 % del DEM o el violeta de encina matcheando
+99.9 % son físicamente imposibles.</p>
+<p>Comprobación independiente del mismo cálculo, sobre la imagen
+original sin resize:</p>
+<pre><code>color-terreno.png   tol=10  matched 125337 (21.98%)
+color-encina.png    tol=10  matched 40331  (7.07%)
+</code></pre>
+<p>→ Esos números <strong>sí</strong> son razonables. ¿Por qué tras resize el
+ratio se dispara?</p>
+<hr>
+<h2 id="por-que-pasaba">Por qué pasaba</h2>
+<p>El código que matcheaba colores era:</p>
+<pre><code class="language-python">pixels = np.asarray(img, dtype=np.int16)
+diff = pixels - np.array(color_esperado, dtype=np.int16)
+dist2 = (diff[..., 0] ** 2 + diff[..., 1] ** 2 + diff[..., 2] ** 2)
+mascara = dist2 &lt;= (COLOR_TOLERANCIA ** 2)
+</code></pre>
+<p><code>pixels</code> está en <code>int16</code>. <code>int16</code> tiene rango <code>[-32768, 32767]</code>.</p>
+<p>Para componentes RGB en <code>[0, 255]</code>, la diferencia <code>diff</code> está en
+<code>[-255, 255]</code>. Hasta aquí, bien.</p>
+<p><strong>Pero <code>255 ** 2 = 65025</code>, que sobrepasa el rango de int16</strong>.
+NumPy preserva el dtype y hace el cuadrado <strong>con overflow
+silencioso</strong>. Resultado:</p>
+<pre><code class="language-python">&gt;&gt;&gt; np.int16(255) ** 2
+np.int16(-535)
+&gt;&gt;&gt; np.int16(200) ** 2
+np.int16(-25536)
+</code></pre>
+<p>Cuando sumamos tres componentes cuadradas con overflow,
+<code>dist2</code> sale en <code>[-32768, 32767]</code> con valores <strong>negativos para
+casi todos los píxeles cuyos componentes diff son grandes</strong>.</p>
+<p>Y <code>dist2 &lt;= 100</code> con <code>dist2</code> negativo es trivialmente <code>True</code>. La
+máscara cubría ~99 % del mapa.</p>
+<hr>
+<h2 id="por-que-el-debug-independiente-si-funcionaba">Por qué el debug independiente sí funcionaba</h2>
+<p>El script suelto que validé antes del bug iteraba <strong>uno a uno</strong>
+por componente y comparaba: usaba <code>int(r)</code> y <code>int(g)</code> y <code>int(b)</code>
+de Python (precisión arbitraria), no array NumPy. Por eso reportaba
+ratios correctos.</p>
+<p>Tras meterlo en el flujo de <code>cargar_fuel_map</code> con NumPy y un dtype
+explícito, el overflow apareció. Lección: <strong>el dtype del array
+NumPy es contagioso a las operaciones</strong>. <code>arr16 ** 2</code> sigue siendo
+int16.</p>
+<hr>
+<h2 id="la-solucion">La solución</h2>
+<p>Una sola línea:</p>
+<pre><code class="language-python">pixels = np.asarray(img, dtype=np.int32)   # antes: int16
+diff = pixels - np.array(color_esperado, dtype=np.int32)
+</code></pre>
+<p><code>int32</code> cubre <code>[-2_147_483_648, 2_147_483_647]</code>. Tres componentes
+cuadradas suman como mucho <code>3 × 65025 = 195_075</code>. Encaja sin
+problema.</p>
+<p>Tras la corrección:</p>
+<pre><code>[FUEL] color-terreno.png         fuel=0.00  matched  335294 ( 15.1%)
+[FUEL] color-vegetacion-alta.png fuel=0.90  matched 1150146 ( 51.7%)
+[FUEL] color-vegetacion-baja.png fuel=0.55  matched   19631 (  0.9%)
+[FUEL] color-pinus-helepensis.png fuel=0.95  matched     813 (  0.0%)
+[FUEL] color-encina.png          fuel=0.40  matched    2936 (  0.1%)
+[FUEL] color-quejigo.png         fuel=0.50  matched    8494 (  0.4%)
+[FUEL] color-camino.png          fuel=0.00  matched    8006 (  0.4%)
+[FUEL] resumen: 47.4% fuel=0 (no arde), 51.2% fuel≥0.8
+</code></pre>
+<p>Distribución física coherente con la imagen visible.</p>
+<hr>
+<h2 id="test-que-cazaria-esto">Test que cazaría esto</h2>
+<p><code>engine/test_world_loader.cpp::test_fuel_valores_canon</code> falla si
+algún byte del world.dat cae fuera del set <code>{0.0, 0.4, 0.5, 0.55,
+0.9, 0.95}</code>. Con el overflow, casi todas las celdas terminaban con
+fuel=0.5 (último archivo no-cero procesado, que es quejigo) — el
+test capturaría el patrón uniforme con
+<code>test_fuel_no_uniforme</code> (que exige ≥2 valores distintos).</p>
+<hr>
+<h2 id="leccion-general">Lección general</h2>
+<blockquote>
+<p>Cuando un cálculo numérico te dé un resultado que va contra la
+intuición física, <strong>comprueba el dtype</strong> antes que la lógica.
+NumPy hereda dtype en operaciones aritméticas; un int16 multiplicado
+consigo mismo sigue siendo int16. Si el resultado puede exceder
+el rango, hay que upcastear explícitamente.</p>
+</blockquote>
+<p>Para tareas de procesado de imágenes con NumPy: <strong>siempre arrancar
+en int32 o float32</strong>. int8/int16 ahorran memoria pero son
+trampolines de overflow.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 4 — Propagación real de fuego · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 4 — Propagación real de fuego</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h2 id="por-que-este-mvp-existe">Por qué este MVP existe</h2>
+<p>Los logs del motor mostraban que el fuego moría solo en el primer tick:</p>
+<pre><code>tick=1  burning=1 smoke=0 temp_max=800.0
+tick=2  burning=0 smoke=1 temp_max=0.000127
+tick=3  burning=0 smoke=1 temp_max=0.000127
+</code></pre>
+<p>La causa: el motor solo tenía tres estados (<code>EMPTY</code>, <code>BURNING</code>, <code>SMOKE</code>). Las 10.000 celdas de superficie se generaban como <code>EMPTY</code>, que el serializer descarta. Después del primer tick, la única celda <code>BURNING</code> quedaba completamente sola en el grid — sin vecinos, sin propagación posible.</p>
+<hr>
+<h2 id="la-solucion-estado-fuel">La solución: estado FUEL</h2>
+<p>Añadir un cuarto estado <code>FUEL</code>: una celda que existe en el grid, tiene combustible, y pasa a <code>BURNING</code> cuando la temperatura que recibe de sus vecinas supera el umbral de ignición (100°C).</p>
+<p>Con 10.000 celdas <code>FUEL</code> en la superficie, el fuego tiene vecinos reales. La propagación ocurre a través del pipeline físico existente.</p>
+<p>Ver el mecanismo exacto de propagación: <a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a></p>
+<hr>
+<h2 id="issues-implementadas">Issues implementadas</h2>
+<h3 id="32-motor-c-estado-fuel"><code>#32</code> — Motor C++: estado FUEL</h3>
+<p>Cuatro ficheros modificados:</p>
+<ul>
+<li><code>engine/celda.h</code> — <code>FUEL</code> añadido al enum <code>EstadoCelda</code></li>
+<li><code>engine/serializar.h</code> — lee/escribe <code>"FUEL"</code> y lo incluye en el JSON de salida (no se descarta como <code>EMPTY</code>)</li>
+<li><code>engine/reaccion.h</code> — transición <code>FUEL → BURNING</code> cuando <code>temperature &gt; 100°C</code></li>
+<li><code>engine/buoyancy.h</code> — buoyancy restringida a <code>BURNING</code> y <code>SMOKE</code> (el combustible sólido no tiene flotabilidad)</li>
+</ul>
+<p>El cambio en <code>buoyancy.h</code> fue necesario para que las celdas <code>FUEL</code> no perdieran su temperatura a través de la advección antes de que <code>aplicarReaccion</code> pudiera actuar. Ver: <a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a></p>
+<p><strong>Tests:</strong> 7/7 reacción · 6/6 serialización · 6/6 buoyancy · 11/11 integración</p>
+<hr>
+<h3 id="33-toolsbuild_initial_statepy-superficie-como-fuel"><code>#33</code> — <code>tools/build_initial_state.py</code>: superficie como FUEL</h3>
+<p>Cambio de una línea: <code>"state": "EMPTY"</code> → <code>"state": "FUEL"</code>. Además, <code>"reaction": 1.0</code> → <code>"reaction": 0.0</code> — las celdas FUEL no están ardiendo, el campo reaction es propio de BURNING.</p>
+<p>Ver: <a href="reaction-campo-fuel-vs-burning.html">reaction-campo-fuel-vs-burning</a></p>
+<p><code>data/initial_state.json</code> regenerado con 10.000 celdas FUEL.</p>
+<p><strong>Tests:</strong> 11/11</p>
+<hr>
+<h3 id="34-test-de-propagacion-end-to-end"><code>#34</code> — Test de propagación end-to-end</h3>
+<p>Script <code>engine/test_propagacion.sh</code>: 1 celda BURNING rodeada de 6 FUEL en un grid 7×5×7. Encadena 20 ticks y verifica que <code>burning + smoke &gt; 1</code>.</p>
+<p>Resultado observado:</p>
+<pre><code>tick=1   burning=1  fuel=6
+tick=7   burning=1  fuel=6
+tick=8   burning=2  fuel=5   ← propagación confirmada
+</code></pre>
+<p>La propagación ocurre en el tick 8 a través del mecanismo de presión + advección.</p>
+<p><strong>Tests:</strong> 3/3</p>
+<hr>
+<h3 id="35-toolssimpy-entorno-de-simulacion-en-terminal"><code>#35</code> — <code>tools/sim.py</code>: entorno de simulación en terminal</h3>
+<p>Script Python que habla directamente con el motor C++ (mismo protocolo JSON línea a línea que la API) y muestra stats medibles por tick, sin necesidad de arrancar Godot ni la API.</p>
+<pre><code>tick=23  B=4   S=9   F=9987  max_temp=127.6°  Δactivas=+4
+tick=24  B=1   S=13  F=9986  max_temp=103.3°  Δactivas=+1
+</code></pre>
+<p>Flags principales: <code>--ignite X Z</code>, <code>--ticks N</code>, <code>--state fichero.json</code>, <code>--debug</code></p>
+<p>Permite verificar propagación, parámetros y cambios del motor desde terminal pura. Godot queda como renderer final — la validación de física ocurre aquí.</p>
+<p><strong>Tests:</strong> 5/5</p>
+<hr>
+<h2 id="verificacion-del-criterio-de-cierre">Verificación del criterio de cierre</h2>
+<p>Con el estado real (10.000 celdas FUEL) e ignición en (50, 50):</p>
+<pre><code class="language-bash">python3 tools/sim.py --ignite 50 50 --ticks 30
+</code></pre>
+<pre><code>tick=1   B=0  S=1  F=9999  max_temp=400.0°  Δactivas=0
+tick=2   B=1  S=1  F=9998  max_temp=200.0°  Δactivas=+1
+...
+tick=22  B=2  S=7  F=9991  max_temp=113.3°  Δactivas=+2
+tick=23  B=4  S=9  F=9987  max_temp=127.6°  Δactivas=+4
+tick=30  B=0  S=18 F=9982  max_temp=91.4°   Δactivas=0
+</code></pre>
+<p><code>burning + smoke</code> crece de 1 a 18 en 30 ticks. El criterio de cierre se cumple.</p>
+<hr>
+<h2 id="dificultades-encontradas">Dificultades encontradas</h2>
+<ul>
+<li><a href="buoyancy-aplicada-a-celdas-fuel.html">buoyancy-aplicada-a-celdas-FUEL</a> — el bug más relevante: buoyancy destruía la temperatura de las celdas FUEL antes de que reacción pudiera actuar</li>
+<li><a href="mecanismo-propagacion-via-presion.html">mecanismo-propagacion-via-presion</a> — la propagación no es obvia: no es la temperatura del BURNING la que calienta directamente a los vecinos, sino el gradiente de presión que crea el solver Jacobi</li>
+<li><a href="reaction-campo-fuel-vs-burning.html">reaction-campo-fuel-vs-burning</a> — el campo reaction tiene semántica distinta según el estado de la celda</li>
+<li><a href="json-protocolo-linea-unica.html">json-protocolo-linea-unica</a> — el protocolo del motor exige JSON compacto en una sola línea; heredocs multilínea en bash causan fallos silenciosos</li>
+</ul>
+<hr>
+<h2 id="lo-que-no-entro-en-este-mvp">Lo que NO entró en este MVP</h2>
+<ul>
+<li>Shaders de fuego en Godot</li>
+<li>Visualización ASCII del grid en sim.py (posible extensión futura)</li>
+<li>Integración de la imagen hiperespectral (fuel_coefficient real por especie)</li>
+<li>Optimización sparse del solver y advección</li>
+<li>Caminos forestales</li>
+</ul>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

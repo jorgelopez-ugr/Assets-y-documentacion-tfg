@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integración Godot-Motor — Recopilatorio del milestone · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>Integración Godot-Motor — Recopilatorio del milestone</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="motor-capacidades-vs-visualizacion.html">Motor — Capacidades vs Visualización</a></p>
+<h2 id="tldr">TL;DR</h2>
+<ul>
+<li><strong>Milestone abierto el 2026-05-22, en cierre el 2026-05-28</strong>.</li>
+<li>Punto de partida: motor C++ + API + Godot funcionaban por separado.
+  El motor calculaba muchísimo más de lo que Godot mostraba.</li>
+<li>Punto de llegada: la mayoría de capacidades del motor están
+  visualizadas — fuego, humo (con caveat documentado), ceniza
+  permanente, viento, intensidad de cortafuegos, fuel real por
+  especie, cuadrantes activos, perfil del motor. La columna de humo
+  cierra una <strong>decisión de honestidad</strong> (ver más abajo).</li>
+<li><strong>Cero refactor de la arquitectura HTTP</strong>: se valida la decisión de
+  tres capas (motor C++ ↔ API REST ↔ cliente Godot).</li>
+<li><strong>+82 tests nuevos sin regresiones</strong> (motor 165→171, API 65→88).</li>
+</ul>
+<h2 id="las-13-issues-del-milestone">Las 13 issues del milestone</h2>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Capa</th>
+<th>Aporte</th>
+<th>PR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#79 + #92 + #96</td>
+<td>Godot + motor</td>
+<td>MultiMesh humo + GPUParticles fuego + SMOKE virtual sin tocar solver</td>
+<td>#93, #97</td>
+</tr>
+<tr>
+<td>#80</td>
+<td>Godot</td>
+<td>Veleta 3D del viento como widget HUD</td>
+<td>#98</td>
+</tr>
+<tr>
+<td>#81</td>
+<td>motor + API</td>
+<td>Comando <code>FUEL_MAP</code> + endpoint <code>GET /fuel_map</code></td>
+<td>#103</td>
+</tr>
+<tr>
+<td>#82</td>
+<td>Godot + shader</td>
+<td>Tinte por combustibilidad en el terreno</td>
+<td>#103</td>
+</tr>
+<tr>
+<td>#83</td>
+<td>Godot</td>
+<td>Slider de intensidad de cortafuegos</td>
+<td>#99</td>
+</tr>
+<tr>
+<td>#88 + #89</td>
+<td>motor + API + Godot</td>
+<td>Comando <code>QUADRANTS</code> + overlay debug (tecla <code>Q</code>)</td>
+<td>#100</td>
+</tr>
+<tr>
+<td>#90</td>
+<td>Godot</td>
+<td>Overlay debug de <code>/stats</code> (tecla <code>D</code>)</td>
+<td>#102</td>
+</tr>
+<tr>
+<td>#94</td>
+<td>motor + API + Godot</td>
+<td>Toggle de SMOKE virtual (tecla <code>H</code>)</td>
+<td>#95</td>
+</tr>
+<tr>
+<td>(build_world)</td>
+<td>tools</td>
+<td>Mapa de combustibilidad real desde las 7 capas hiperespectrales</td>
+<td>#103</td>
+</tr>
+</tbody>
+</table>
+<p>Y dos hotfixes de bugs descubiertos en el camino:</p>
+<table>
+<thead>
+<tr>
+<th>Bug</th>
+<th>Resumen</th>
+<th>PR</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Race condition stdin/stdout del motor</td>
+<td>Thread A escribe TICK mientras thread B escribe QUADRANTS, las líneas CHANGED se entremezclan → <code>ValueError: could not convert string to float</code>. Lock en <code>api/motor.py</code>.</td>
+<td>#101</td>
+</tr>
+<tr>
+<td>Tecla Q toggleaba sola</td>
+<td><code>event.echo</code> del key repeat disparaba 30 toggles/segundo. Filtro <code>not event.echo</code> en <code>_input</code>.</td>
+<td>#101</td>
+</tr>
+<tr>
+<td>Veleta no renderizaba</td>
+<td><code>SubViewportContainer</code> directo en <code>CanvasLayer</code> no resuelve anchors. Wrapper <code>Control</code> con preset <code>FULL_RECT</code>.</td>
+<td>#101</td>
+</tr>
+</tbody>
+</table>
+<h2 id="issues-que-aun-no-han-pasado-por-codigo">Issues que aún no han pasado por código</h2>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Por qué</th>
+<th>Decisión</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>#84 + #85</td>
+<td>Exponer <code>reaction</code> en CHANGED + modular partícula</td>
+<td>Pendiente, próxima iteración</td>
+</tr>
+<tr>
+<td>#86</td>
+<td>Pasar diffs de temperatura SMOKE sin filtro</td>
+<td><strong>En tensión con #92</strong>: subí <code>UMBRAL_TEMP_CHANGED</code> de 0.5 a 10°C precisamente para reducir el ×62 de diffs que generaban las celdas SMOKE oscilando</td>
+</tr>
+<tr>
+<td>#87</td>
+<td>Gradiente color humo por temperatura</td>
+<td>Bloqueada por decisión sobre #86</td>
+</tr>
+<tr>
+<td>#91</td>
+<td>Investigación "estado ceniza permanente"</td>
+<td><strong>Cerrada</strong> — la decisión se materializó en el splat RG8 (canal G como ceniza)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="decisiones-cerradas-durante-el-milestone">Decisiones cerradas durante el milestone</h2>
+<h3 id="arquitectura-del-render-del-cliente">Arquitectura del render del cliente</h3>
+<ol>
+<li>
+<p><strong>MultiMesh para humo, GPUParticles para fuego</strong> (PR #97).
+   - Humo: ~250k instancias en el pico — un compute shader por
+     partícula mata la GPU. MultiMesh = solo instancing, coste plano.
+   - Fuego: ~2-3k celdas en el pico — GPUParticles ofrece llamaradas
+     vivas y la GPU no sufre.
+   - Decisión iterada: primero todo a MultiMesh, luego volvió el
+     fuego a partículas tras feedback visual.</p>
+</li>
+<li>
+<p><strong>Splat RG8 en lugar de R8</strong>.
+   - Canal R: cortafuegos pintados por el usuario (marrón).
+   - Canal G: ceniza permanente (negro) donde una celda transita
+     BURNING/SMOKE. Cierra #91 sin necesidad de un estado BURNED en
+     el motor.</p>
+</li>
+<li>
+<p><strong>Veleta del viento como widget 3D del HUD</strong>, no como elemento del
+   mundo (PR #101). <code>SubViewport</code> + <code>SubViewportContainer</code> anclado
+   con <code>PRESET_TOP_RIGHT</code>.</p>
+</li>
+</ol>
+<h3 id="plumbing-motor-api-cliente">Plumbing motor ↔ API ↔ cliente</h3>
+<ol start="4">
+<li>
+<p><strong>Lock global en <code>api/motor.py</code></strong> (PR #101). Cada función pública
+   adquiere <code>threading.Lock</code>. Lo descubrimos vía race condition real
+   (ver <a href="race-condition-motor-stdin-stdout.html">race-condition-motor-stdin-stdout</a>).</p>
+</li>
+<li>
+<p><strong>Protocolo de texto stdin/stdout, no binario</strong>. La latencia
+   I/O era inflada en #92 (×58 diffs); la opción de migrar a
+   protocolo binario se planteó y se descartó tras el análisis: la
+   decisión es <strong>mantener arquitectura</strong>, el coste extra es asumible
+   y la separación de capas se preserva como argumento del TFG.</p>
+</li>
+<li>
+<p><strong><code>FUEL_MAP</code> se emite en hex</strong> en una única línea entre
+   <code>FUEL_MAP_HEADER</code> y <code>FUEL_MAP_DONE</code>. 2.2 MB de bytes → 4.4 MB de
+   hex. Una sola llamada al arrancar el cliente, no por tick.</p>
+</li>
+<li>
+<p><strong><code>GET /fuel_map</code> devuelve <code>application/octet-stream</code></strong> + headers
+   <code>X-Width</code>/<code>X-Height</code>. Sin dependencia de PIL ni PNG en la API.
+   Godot construye <code>Image.create_from_data(W, H, false, FORMAT_R8, ...)</code>.</p>
+</li>
+</ol>
+<h3 id="honestidad-sobre-el-motor-lo-mas-importante-del-milestone">Honestidad sobre el motor (lo más importante del milestone)</h3>
+<ol start="8">
+<li>
+<p><strong>El <code>state</code> SMOKE NO se propaga verticalmente en el motor</strong>
+   (descubierto al validar #79). El solver advecta <code>temperature</code> y
+   <code>density</code> por buoyancy, pero el <code>state</code> discreto solo cambia en
+   <code>aplicarReaccion</code> (FUEL→BURNING, BURNING→SMOKE) sobre celdas
+   FUEL — y FUEL sólo existe en <code>y_superficie</code>. Ver
+   <a href="state-smoke-no-propaga-en-aire.html">state-smoke-no-propaga-en-aire</a>.</p>
+</li>
+<li>
+<p><strong>SMOKE virtual sin tocar el solver</strong> (#92). Función
+   <code>estado_aparente()</code> en <code>engine/main.cpp</code>: emite <code>state=SMOKE</code>
+   para celdas AIR con <code>temperature &gt; 200°C</code>. La física del motor
+   no cambia — sólo lo que se reporta. Recuperamos la columna física
+   que ya se calculaba.</p>
+</li>
+<li>
+<p><strong>Toggle del usuario para la columna virtual</strong> (#94). El coste
+    de la columna (×2.4 latencia, ×58 diffs) se paga sólo cuando
+    el usuario quiere ver el humo. Tecla <code>H</code> lo apaga y la latencia
+    vuelve a baseline.</p>
+</li>
+</ol>
+<h3 id="datos-reales">Datos reales</h3>
+<ol start="11">
+<li>
+<p><strong><code>world.dat</code> lee 7 capas hiperespectrales</strong> (<code>tools/build_world.py</code>,
+    Fase 2 de #81/#82). Mapeo color RGB → fuel_coefficient con
+    tolerancia 10. 47.4 % del DEM tiene fuel=0 (suelo desnudo,
+    caminos, fuera del escaneo); 51.2 % tiene fuel ≥ 0.8 (vegetación
+    alta + Pinus). Ver <a href="build-world-leyendo-especies.html">build-world-leyendo-especies</a>.</p>
+</li>
+<li>
+<p><strong>Estiramos al DEM sin preservar ratio</strong> (1058×539 → 1598×1393).
+    Decisión consciente: la fidelidad geográfica exacta requiere un
+    GeoTIFF georeferenciado, fuera del scope de este milestone.</p>
+</li>
+</ol>
+<h2 id="bugs-significativos-del-camino">Bugs significativos del camino</h2>
+<p>Documentados en <code>errores-afrontados/</code>:</p>
+<ul>
+<li><a href="race-condition-motor-stdin-stdout.html">race-condition-motor-stdin-stdout</a> — el más serio, rompía /tick.</li>
+<li><a href="int16-overflow-build-world.html">int16-overflow-build-world</a> — <code>(255²)</code> no cabe en int16 y la
+  máscara matcheaba ~99 % del mapa.</li>
+<li><a href="state-smoke-no-propaga-en-aire.html">state-smoke-no-propaga-en-aire</a> — limitación del motor que
+  obligó a la decisión "SMOKE virtual" (#92).</li>
+<li><a href="veleta-no-renderiza-en-canvaslayer.html">veleta-no-renderiza-en-canvaslayer</a> — <code>SubViewportContainer</code>
+  necesita un Control padre con anchors válidos.</li>
+</ul>
+<h2 id="mediciones-de-coste">Mediciones de coste</h2>
+<h3 id="bench-100-ticks-ignicion-central">Bench (100 ticks, ignición central)</h3>
+<table>
+<thead>
+<tr>
+<th>Configuración</th>
+<th>Tiempo total</th>
+<th>Latencia media</th>
+<th>Diffs/tick</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Baseline (sin columna humo virtual)</td>
+<td>25 s</td>
+<td>246 ms</td>
+<td>457</td>
+</tr>
+<tr>
+<td><strong>#92 + #94 humo OFF</strong></td>
+<td>22 s</td>
+<td>220 ms</td>
+<td>457</td>
+</tr>
+<tr>
+<td>#92 humo ON</td>
+<td>60 s</td>
+<td>595 ms</td>
+<td>26 479</td>
+</tr>
+</tbody>
+</table>
+<p><strong>El toggle de humo da una opción real</strong>: para batch, demo rápida o
+modo bajo FPS se apaga y el motor vuelve a baseline. Para demo
+visual completa se enciende y se asume el coste.</p>
+<h3 id="granularidad">Granularidad</h3>
+<ul>
+<li>DEM: 1598 m × 1393 m × 146 m.</li>
+<li>Rejilla de cuadrantes: 32 × 28 (= 896 cuadrantes).</li>
+<li>Celdas por cuadrante: 50 × 50 × 20 (= 50 000 voxels).</li>
+<li>Volumen total potencial: ~44.8 M voxels.</li>
+<li>Volumen procesado típico: 1-10 cuadrantes activos al pico — el
+  overlay <code>Q</code> lo enseña visualmente.</li>
+</ul>
+<h2 id="hallazgos-para-defensa-del-tfg">Hallazgos para defensa del TFG</h2>
+<ol>
+<li>
+<p><strong>El sistema de cuadrantes activables ahorra ~99 % del cómputo</strong>
+   que un grid plano tendría. El overlay <code>Q</code> lo demuestra
+   visualmente en tiempo real.</p>
+</li>
+<li>
+<p><strong>El solver Stam/Nvidia adaptado funciona en una región real
+   escaneada</strong> (no un terreno sintético). La integración del DEM
+   real, las capas de especies y el solver es coherente
+   con la propuesta del TFG.</p>
+</li>
+<li>
+<p><strong>La arquitectura HTTP de tres capas se mantiene como decisión
+   defendible</strong>: el cuello del tick es I/O del pipe motor→Python,
+   no el HTTP del cliente. Migrar a binario o tirar la API y meter
+   el motor como GDExtension son optimizaciones futuras
+   independientes del diseño.</p>
+</li>
+<li>
+<p><strong>Tope a la fidelidad geográfica</strong>: el motor tiene 20 niveles
+   verticales × ~7.68 m/nivel = 146 m de columna. Suficiente para
+   visualizar el penacho, insuficiente para columnas atmosféricas
+   reales (1-5 km). Limitación documentada y asumida.</p>
+</li>
+</ol>
+<h2 id="resumen-de-tests-al-cierre">Resumen de tests al cierre</h2>
+<table>
+<thead>
+<tr>
+<th>Suite</th>
+<th style="text-align: right;">Inicio del milestone</th>
+<th style="text-align: right;">Cierre del milestone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>engine/test_main.sh</code></td>
+<td style="text-align: right;">35 OK</td>
+<td style="text-align: right;"><strong>48 OK</strong> (+13)</td>
+</tr>
+<tr>
+<td><code>engine/test_simulacion.sh</code></td>
+<td style="text-align: right;">93 OK</td>
+<td style="text-align: right;"><strong>93 OK</strong> (snapshot recalibrado a cuadrante 16,2)</td>
+</tr>
+<tr>
+<td><code>engine/test_smoke_virtual.sh</code></td>
+<td style="text-align: right;">—</td>
+<td style="text-align: right;"><strong>11 OK</strong> (nuevo)</td>
+</tr>
+<tr>
+<td><code>engine/test_world_loader.sh</code></td>
+<td style="text-align: right;">18 OK</td>
+<td style="text-align: right;"><strong>19 OK</strong> (asserts adaptados a fuel no-uniforme)</td>
+</tr>
+<tr>
+<td><code>engine/test_buoyancy/reaccion/serializar</code></td>
+<td style="text-align: right;">12 OK</td>
+<td style="text-align: right;"><strong>12 OK</strong></td>
+</tr>
+<tr>
+<td><code>api/pytest -q</code></td>
+<td style="text-align: right;">65 OK</td>
+<td style="text-align: right;"><strong>88 OK</strong> (+23)</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td style="text-align: right;"><strong>223 OK</strong></td>
+<td style="text-align: right;"><strong>271 OK</strong> (+48 netos)</td>
+</tr>
+</tbody>
+</table>
+<p>Cero regresiones netas. Algunos tests fueron migrados a otras
+coordenadas (cuadrante 5,5 → 16,2 por necesidad del nuevo mapa de
+fuel), no quitados.</p>
+<h2 id="cambios-en-el-repo">Cambios en el repo</h2>
+<h3 id="codigo-commiteado-en-ajustando-godot-motor">Código (commiteado en <code>ajustando-godot-motor</code>)</h3>
+<pre><code>engine/
+  main.cpp            FUEL_MAP, QUADRANTS, SMOKE_VIRTUAL on|off
+                      + estado_aparente() para SMOKE virtual
+                      + lock en cliente Python evita race condition
+  test_main.sh        +13 asserts (FUEL_MAP, QUADRANTS, SMOKE_VIRTUAL)
+  test_simulacion.cpp coords migradas a cuadrante (16, 2)
+  test_smoke_virtual.sh  NUEVO (11 asserts)
+  test_world_loader.cpp  asserts adaptados a fuel no-uniforme
+
+api/
+  main.py             POST /humo_virtual, GET /fuel_map, GET /quadrants
+  motor.py            +set_humo_virtual, fuel_map, quadrants
+                      + threading.Lock en toda función pública
+  test_endpoints.py   +9 tests (fuel_map, quadrants, humo_virtual)
+  test_e2e.py         coords migradas a cuadrante (16, 2)
+
+godotUI/
+  simulacion.gd       Mucho. Toggle humo (H), overlay cuadrantes (Q),
+                      overlay stats (D), veleta 3D HUD, slider
+                      intensidad cortafuegos, fuel_map descarga,
+                      MultiMesh humo + GPUParticles fuego, ceniza
+                      permanente, filtro echo en _input
+  testing-shader-1.gdshader  uniform fuel_map + color_fuel_alto,
+                             tinte verde proporcional al fuel
+  escena1-terreno-shaders.tscn  alineado elev_min/max al motor
+
+tools/
+  build_world.py      cargar_fuel_map() lee las 7 PNG hiperespectrales
+                      y aplica tolerancia 10 RGB para matcheo de color
+
+data/
+  world.dat           regenerado con fuel real (no más uniforme 1.0)
+</code></pre>
+<h3 id="documentacion-tfg-vault-obsidian-local">Documentación TFG (vault Obsidian local)</h3>
+<pre><code>docs/docs-tfg/
+  Motor — Capacidades vs Visualización.md   ← actualizado al cierre
+  mvps/
+    Integracion Godot-Motor — Recopilatorio.md   ← este documento
+  errores-afrontados/
+    race-condition-motor-stdin-stdout.md
+    int16-overflow-build-world.md
+    state-smoke-no-propaga-en-aire.md
+    veleta-no-renderiza-en-canvaslayer.md
+</code></pre>
+<h2 id="trabajo-futuro">Trabajo futuro</h2>
+<p>Plan acordado con el usuario tras este milestone (queda como
+siguiente recorrido):</p>
+<ol>
+<li><strong>HUD usable</strong> para gestor forestal no técnico.</li>
+<li><strong>Suavizado del terreno</strong> (limar picos y sumideros del DEM real)
+   preservando la inclinación natural del barranco central.</li>
+<li><strong>Árboles 3D estáticos</strong> colocados donde la imagen hiperespectral
+   indica vegetación alta densa.</li>
+<li><strong>Sistema de 3 estados</strong> de demo:
+   - Estado 1: dibujar caminos / cortafuegos.
+   - Estado 2: marcar punto de ignición.
+   - Estado 3: 1 minuto de fuego propagándose.</li>
+</ol>
+<p>Y dos issues abiertas del milestone actual que cierran tras la
+defensa:</p>
+<ul>
+<li><strong>#84 + #85</strong>: exponer <code>reaction</code> y modular partícula de fuego.</li>
+<li><strong>#86 + #87</strong>: gradiente de temperatura en humo. Bloqueadas por
+  la decisión #86 vs #92 (subir el filtro de re-emisiones reduce
+  diffs pero tapa la variación de temperatura intra-SMOKE).</li>
+</ul>
+<h2 id="conclusion">Conclusión</h2>
+<p>El milestone se cierra con la mayoría de capacidades del motor
+expuestas y visualizadas. La columna de humo es <strong>honestamente
+imperfecta</strong>: el motor calcula la física en celdas AIR pero el
+state SMOKE solo existe en superficie, y la solución "SMOKE
+virtual" expone esa información sin mentir sobre el solver. El
+usuario tiene el toggle para encenderla o no.</p>
+<p>La defensa del TFG ahora puede mostrar:</p>
+<ul>
+<li><strong>Mapa real escaneado</strong> (no terreno sintético).</li>
+<li><strong>Mapa de combustibilidad por especie</strong> (no fuel uniforme).</li>
+<li><strong>Visualización del solver activando solo lo necesario</strong> (overlay Q).</li>
+<li><strong>Coste honesto del solver</strong> (overlay D).</li>
+</ul>
+<p>El siguiente milestone se enfoca en <strong>producto redondo para la
+defensa</strong>: HUD usable, terreno bonito, demo en 3 estados.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Error: buoyancy aplicada a celdas FUEL destruye su temperatura antes de que reacción pueda actuar · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Errores afrontados</p>
+    <h1>Error: buoyancy aplicada a celdas FUEL destruye su temperatura antes de que reacción pueda actuar</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a> · <a href="mvp-4-propagacion-real-de-fuego.html">MVP 4 — Propagación real de fuego</a></p>
+<p><strong>MVP afectado:</strong> MVP 4
+<strong>Archivos involucrados:</strong> <code>engine/buoyancy.h</code> · <code>engine/adveccion.h</code> · <code>engine/reaccion.h</code></p>
+<hr>
+<h2 id="el-sintoma">El síntoma</h2>
+<p>Al ejecutar el test de integración #9 — <em>"celda FUEL a 200°C pasa a BURNING"</em> — el motor devolvía la celda en estado <code>FUEL</code> en lugar de <code>BURNING</code>, a pesar de que el umbral de ignición es 100°C y la celda partía de 200°C.</p>
+<p>Lo llamativo: el <strong>test unitario</strong> <code>test_fuel_caliente_pasa_a_burning</code> (en <code>test_reaccion.cpp</code>) <strong>sí pasaba</strong>. La función <code>aplicarReaccion</code> por sí sola funcionaba correctamente. El fallo solo aparecía al pasar el JSON por el motor completo.</p>
+<pre><code>[OK]  test_fuel_caliente_pasa_a_burning   ← test unitario pasa
+[FAIL] Celda FUEL a 200°C no pasó a BURNING  ← integración falla
+</code></pre>
+<hr>
+<h2 id="como-se-encontro">Cómo se encontró</h2>
+<p>El test unitario prueba <code>aplicarReaccion</code> de forma aislada — le entrega una celda con temperatura=200 y verifica que pase a BURNING. Correcto.</p>
+<p>El test de integración pasa el mismo JSON al binario <code>motor</code>, que ejecuta el pipeline completo:</p>
+<pre><code>aplicarBuoyancy  →  resolverPresion  →  advectar  →  aplicarReaccion
+</code></pre>
+<p>La diferencia entre ambos tests era exactamente el pipeline previo a <code>aplicarReaccion</code>. Eso acotaba el problema a <code>buoyancy</code>, <code>presion</code> o <code>adveccion</code>.</p>
+<hr>
+<h2 id="la-causa-raiz">La causa raíz</h2>
+<p><code>aplicarBuoyancy</code> en <code>engine/buoyancy.h</code> iteraba sobre <strong>todas</strong> las celdas del grid sin filtrar por estado:</p>
+<pre><code class="language-cpp">// CÓDIGO INCORRECTO (antes del fix)
+void aplicarBuoyancy(Grid&amp; g, float A, float B) {
+    for (...) {
+        Celda&amp; c = g.get(x, y, z);
+        float fuerza = A * c.temperature - B * c.density;
+        c.velocity.z += fuerza;   // ← aplica a CUALQUIER celda
+    }
+}
+</code></pre>
+<p>Para una celda <code>FUEL</code> con temperatura=200°C y parámetros por defecto (<code>A=0.1</code>, <code>B=0.5</code>, <code>density=0</code>):</p>
+<pre><code>fuerza = 0.1 * 200 - 0.5 * 0 = 20.0
+velocity.z = 0 + 20 = 20.0
+</code></pre>
+<p>Luego en la advección MacCormack, el método semi-Lagrangiano traza hacia atrás:</p>
+<pre><code>origen_z = z - dt * velocity.z
+         = 1 - 0.1 * 20
+         = 1 - 2
+         = -1   ← fuera del grid, se clampea a z=0
+</code></pre>
+<p>La posición de origen clampea a una celda <code>EMPTY</code> con temperatura=0°C. La interpolación trilineal devuelve 0°C para la temperatura de la celda FUEL. Cuando llega <code>aplicarReaccion</code>:</p>
+<pre><code>temperature = 0°C  &lt;  umbral 100°C  →  FUEL permanece FUEL
+</code></pre>
+<p>El calor "desapareció" antes de llegar a la etapa que decide si la celda enciende.</p>
+<hr>
+<h2 id="la-solucion">La solución</h2>
+<p>Restringir <code>aplicarBuoyancy</code> a las celdas que realmente son gas: <code>BURNING</code> y <code>SMOKE</code>. Las celdas <code>FUEL</code> son combustible sólido — no flotan ni tienen dinámica de fluido.</p>
+<pre><code class="language-cpp">// engine/buoyancy.h — después del fix
+void aplicarBuoyancy(Grid&amp; g, float A, float B) {
+    for (...) {
+        Celda&amp; c = g.get(x, y, z);
+
+        // Buoyancy solo aplica a gases (fuego y humo), no a combustible sólido
+        if (c.state != EstadoCelda::BURNING &amp;&amp; c.state != EstadoCelda::SMOKE) continue;
+
+        float fuerza = A * c.temperature - B * c.density;
+        c.velocity.z += fuerza;
+    }
+}
+</code></pre>
+<p>Con este cambio, una celda <code>FUEL</code> conserva <code>velocity=(0,0,0)</code>. La advección traza hacia atrás a su propia posición y recupera su temperatura original. <code>aplicarReaccion</code> la recibe a 200°C &gt; 100°C y la transiciona a <code>BURNING</code>.</p>
+<hr>
+<h2 id="por-que-tiene-sentido-fisicamente">Por qué tiene sentido físicamente</h2>
+<p>La fuerza de flotabilidad modela el <strong>ascenso del gas caliente</strong> (columna de aire caliente, humo). Es una propiedad de los fluidos, no de los sólidos.</p>
+<p>Una celda <code>FUEL</code> representa vegetación: hierba, matorral, árbol. No flota. No tiene velocidad propia. Solo recibe calor de sus vecinas ardiendo y, cuando ese calor supera el umbral de ignición, enciende.</p>
+<p>Aplicar buoyancy a <code>FUEL</code> no era solo un bug de implementación — era un error conceptual en el modelo físico.</p>
+<hr>
+<h2 id="senal-que-delato-el-problema">Señal que delató el problema</h2>
+<p>La divergencia entre test unitario y test de integración fue la clave. Cuando una función pasa sus tests unitarios pero falla en integración, el problema está casi siempre en la <strong>interacción entre módulos</strong>, no en la función en sí. En este caso, el pipeline previo alteraba los datos antes de que llegaran al módulo que fallaba.</p>
+<hr>
+<h2 id="tests-anadidos-tras-el-fix">Tests añadidos tras el fix</h2>
+<p>En <code>engine/test_buoyancy.cpp</code>:
+- <code>test_buoyancy_no_afecta_fuel</code> — una celda FUEL con 500°C no modifica su velocidad
+- <code>test_buoyancy_no_afecta_empty</code> — una celda EMPTY tampoco recibe buoyancy</p>
+<p>Tests previos actualizados para usar estado <code>BURNING</code> o <code>SMOKE</code> explícitamente, dejando claro que buoyancy requiere gas activo.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

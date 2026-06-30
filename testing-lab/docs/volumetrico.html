@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modo volumétrico (K=20) vs superficie (K=1)</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  /* ── Comparador de columnas animado (el "gif") ───────────────────────── */
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1.4rem; margin: 1.8rem 0; }
+  @media (max-width: 640px) { .cols { grid-template-columns: 1fr; } }
+  .col-card {
+    background: #0a0e14; border: 1px solid var(--linea); border-radius: 12px;
+    padding: 1.1rem 1.1rem 1rem; text-align: center;
+  }
+  .col-card h4 { margin: 0 0 .15rem; color: var(--titulo); font-size: 1.05rem; }
+  .col-card .k { font-family: var(--mono); font-size: .8rem; color: var(--tinta-soft); }
+  .col-card.sur { border-top: 3px solid var(--ok); }
+  .col-card.vol { border-top: 3px solid var(--acento2); }
+  /* la "columna de aire" de 20 niveles */
+  .tower {
+    position: relative; width: 64px; height: 240px; margin: 1rem auto .6rem;
+    display: flex; flex-direction: column-reverse; gap: 2px;
+  }
+  .tower .lvl {
+    flex: 1 1 auto; border-radius: 2px; background: #11161f; border: 1px solid #161c26;
+  }
+  /* suelo (nivel 0) siempre activo */
+  .tower .lvl.suelo { background: #5a3a1e; border-color: #6b4622; }
+  /* aire vivo en superficie: solo el nivel 1 pulsa */
+  .col-card.sur .tower .lvl.aire1 {
+    background: var(--acento2);
+    animation: arde 1.6s ease-in-out infinite;
+  }
+  /* volumétrico: toda la columna se enciende de abajo arriba en bucle */
+  .col-card.vol .tower .lvl.air {
+    background: var(--acento2);
+    animation: sube 4s linear infinite;
+    opacity: 0;
+  }
+  @keyframes arde { 0%,100% { filter: brightness(.7); } 50% { filter: brightness(1.4); } }
+  @keyframes sube { 0% { opacity: 0; } 12% { opacity: .9; } 80% { opacity: .55; } 100% { opacity: 0; } }
+  /* retardos para que el humo "ascienda" nivel a nivel en el volumétrico */
+  .vol .tower .lvl:nth-child(2){animation-delay:.0s}  .vol .tower .lvl:nth-child(3){animation-delay:.18s}
+  .vol .tower .lvl:nth-child(4){animation-delay:.36s} .vol .tower .lvl:nth-child(5){animation-delay:.54s}
+  .vol .tower .lvl:nth-child(6){animation-delay:.72s} .vol .tower .lvl:nth-child(7){animation-delay:.9s}
+  .vol .tower .lvl:nth-child(8){animation-delay:1.08s} .vol .tower .lvl:nth-child(9){animation-delay:1.26s}
+  .vol .tower .lvl:nth-child(10){animation-delay:1.44s} .vol .tower .lvl:nth-child(11){animation-delay:1.62s}
+  .vol .tower .lvl:nth-child(12){animation-delay:1.8s} .vol .tower .lvl:nth-child(13){animation-delay:1.98s}
+  .vol .tower .lvl:nth-child(14){animation-delay:2.16s} .vol .tower .lvl:nth-child(15){animation-delay:2.34s}
+  .vol .tower .lvl:nth-child(16){animation-delay:2.52s} .vol .tower .lvl:nth-child(17){animation-delay:2.7s}
+  .vol .tower .lvl:nth-child(18){animation-delay:2.88s} .vol .tower .lvl:nth-child(19){animation-delay:3.06s}
+  .vol .tower .lvl:nth-child(20){animation-delay:3.24s} .vol .tower .lvl:nth-child(21){animation-delay:3.42s}
+  .col-card .pie { font-size: .8rem; color: var(--tinta-soft); margin-top: .3rem; }
+  .col-card.sur .pie b { color: var(--ok); }
+  .col-card.vol .pie b { color: var(--acento2); }
+  @media (prefers-reduced-motion: reduce) {
+    .tower .lvl { animation: none !important; opacity: 1 !important; }
+  }
+
+  /* ── Gráfico de barras: latencia /tick que explota ────────────────────── */
+  .chart {
+    background: #0a0e14; border: 1px solid var(--linea); border-radius: 12px;
+    padding: 1.4rem 1.3rem 1rem; margin: 1.8rem 0;
+  }
+  .chart .bars { display: flex; align-items: flex-end; gap: 1.4rem; height: 230px; padding: 0 .5rem; }
+  .chart .grp { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: .35rem; }
+  .chart .pair { display: flex; align-items: flex-end; gap: .5rem; height: 190px; }
+  .chart .bar { width: 28px; border-radius: 4px 4px 0 0; position: relative; }
+  .chart .bar.s { background: var(--ok); }
+  .chart .bar.v { background: var(--acento2); }
+  .chart .bar .n {
+    position: absolute; top: -1.25rem; left: 50%; transform: translateX(-50%);
+    font-family: var(--mono); font-size: .66rem; color: var(--tinta-soft); white-space: nowrap;
+  }
+  .chart .tk { font-family: var(--mono); font-size: .78rem; color: var(--tinta-soft); }
+  .chart .leg { display: flex; gap: 1.4rem; justify-content: center; margin-top: 1rem; font-size: .85rem; }
+  .chart .leg span { display: inline-flex; align-items: center; gap: .4rem; color: var(--tinta-soft); }
+  .sw { width: .85rem; height: .85rem; border-radius: 3px; display: inline-block; }
+  .sw.s { background: var(--ok); } .sw.v { background: var(--acento2); }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">TFG · física · <a href="index.html">índice</a></p>
+    <h1>Volumétrico (K=20) vs superficie (K=1)</h1>
+    <p class="sub">El motor sabe simular una columna de aire entera de
+      <strong>20 niveles</strong> con humo, presión y advección 3D. Pero por
+      defecto usa <strong>una sola capa</strong>. Aquí está por qué la simulación
+      completa es <em>demasiado</em> para lo que el TFG necesita, qué cuesta de
+      verdad, y cómo encenderla si hiciera falta.</p>
+  </header>
+
+  <p>La propuesta oficial del TFG pide <em>«un modelo <strong>simplificado</strong>
+    de propagación… basado en la regla de difusión por adyacencia»</em>. El motor,
+    en una iteración anterior, derivó hacia un simulador <strong>volumétrico</strong>
+    de fuego y humo en 3D —físicamente ambicioso, pero un error de enfoque. El
+    refactor de caminos forestales lo corrigió: la física completa sigue ahí, pero
+    <strong>apagada tras un flag</strong>. Lo que se evalúa es el modo superficie.</p>
+
+  <!-- ═══════════════════════════ LA DIFERENCIA ════════════════════════════ -->
+  <h2>La diferencia en una imagen: cuántas capas viven</h2>
+  <p>La estructura del cuadrante es <strong>siempre</strong> de 50×50×<strong>20</strong>
+    celdas (<code>NIVELES_Y = 20</code>); el modelo no se reescribe a 2D porque el
+    terraformado de cortafuegos necesita las tres dimensiones. Lo que cambia entre
+    modos es <strong>cuántos de esos 20 niveles de aire calcula la física</strong>:</p>
+
+  <div class="cols">
+    <div class="col-card sur">
+      <h4>Modo superficie · default</h4>
+      <div class="k">K = 1 capa de aire viva</div>
+      <div class="tower">
+        <div class="lvl suelo"></div><div class="lvl aire1"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div><div class="lvl"></div><div class="lvl"></div>
+        <div class="lvl"></div>
+      </div>
+      <div class="pie">Suelo + <b>1 capa</b> de aire. El resto es <code>EMPTY</code>
+        (inerte): el motor <b>ni lo calcula</b>.</div>
+    </div>
+
+    <div class="col-card vol">
+      <h4>Modo volumétrico · tras flag</h4>
+      <div class="k">K = 20 niveles vivos (columna entera)</div>
+      <div class="tower">
+        <div class="lvl suelo"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div><div class="lvl air"></div>
+        <div class="lvl air"></div><div class="lvl air"></div>
+      </div>
+      <div class="pie">Toda la columna arde y transporta humo: advección 3D,
+        presión y <b>buoyancy</b> en los 20 niveles.</div>
+    </div>
+  </div>
+
+  <div class="nota">
+    <strong>K no se reescribe a 2D.</strong> Tener <code>NIVELES_Y = 20</code> en
+    memoria no implica calcular 20 niveles: en superficie solo el suelo y la capa 1
+    están vivos. Esa capa 1 es la que <em>propaga</em> el fuego lateralmente — no es
+    decorado (ver <a href="reaccion.html">reacción</a> y <a href="presion.html">presión</a>).
+    El resto del volumen existe como estructura para el terraformado, pero la física
+    lo trata como aire muerto.
+  </div>
+
+  <!-- ═══════════════════════════ POR QUÉ K=1 PROPAGA ══════════════════════ -->
+  <h2>Por qué basta con K=1 para propagar fuego</h2>
+  <p>Parece contraintuitivo que una sola capa de aire baste. El truco está en que,
+    con <strong>una sola capa</strong>, el empuje vertical no tiene a dónde subir y
+    se fuerza <strong>horizontal</strong>:</p>
+  <ol>
+    <li><b>Buoyancy</b> calienta el aire de la capa 1 sobre cada celda ardiendo.</li>
+    <li>Con 1 sola capa, el empuje «choca con el techo» → se vuelve lateral.</li>
+    <li><b>Presión</b> (Jacobi) convierte ese empuje en velocidad horizontal.</li>
+    <li><b>Advección</b> lleva el calor a las celdas de suelo vecinas, que prenden.</li>
+  </ol>
+  <p>El resultado es exactamente la <em>difusión por adyacencia</em> que pide la
+    propuesta — barata y estable. Subir K solo añade altura a una columna de humo
+    que <strong>nadie evalúa</strong>: el cortafuegos se juzga por lo que pasa en el
+    suelo, no por la forma del penacho.</p>
+
+  <!-- ═══════════════════════════ EL COSTE ═════════════════════════════════ -->
+  <h2>Lo que descubrimos: el volumétrico cuesta demasiado</h2>
+  <p>Medimos los dos modos con el <strong>mismo escenario</strong> (ignición central,
+    sin Godot, aislando motor + protocolo). La diferencia no es de grado, es de
+    <strong>orden de magnitud</strong>, y crece con cada tick:</p>
+
+  <div class="chart">
+    <div class="bars">
+      <div class="grp"><div class="pair">
+        <div class="bar s" style="height:1.1%"><span class="n">18ms</span></div>
+        <div class="bar v" style="height:1.0%"><span class="n">31ms</span></div>
+      </div><div class="tk">tick 20</div></div>
+      <div class="grp"><div class="pair">
+        <div class="bar s" style="height:1.9%"><span class="n">60ms</span></div>
+        <div class="bar v" style="height:4.1%"><span class="n">129ms</span></div>
+      </div><div class="tk">tick 40</div></div>
+      <div class="grp"><div class="pair">
+        <div class="bar s" style="height:3.4%"><span class="n">107ms</span></div>
+        <div class="bar v" style="height:23.4%"><span class="n">737ms</span></div>
+      </div><div class="tk">tick 60</div></div>
+      <div class="grp"><div class="pair">
+        <div class="bar s" style="height:4.2%"><span class="n">131ms</span></div>
+        <div class="bar v" style="height:54.1%"><span class="n">1706ms</span></div>
+      </div><div class="tk">tick 80</div></div>
+      <div class="grp"><div class="pair">
+        <div class="bar s" style="height:6.1%"><span class="n">193ms</span></div>
+        <div class="bar v" style="height:100%"><span class="n">3153ms</span></div>
+      </div><div class="tk">tick 100</div></div>
+    </div>
+    <div class="leg">
+      <span><i class="sw s"></i> superficie K=1 (se mantiene plano)</span>
+      <span><i class="sw v"></i> volumétrico K=20 (explota)</span>
+    </div>
+  </div>
+
+  <p>El modo superficie se mantiene en decenas de ms; el volumétrico llega a
+    <strong>más de 3 segundos por tick</strong> en el tick 100 — y seguía subiendo.
+    En 118 s de medición el volumétrico solo alcanzó el tick ~100; el superficie hace
+    120 ticks en <strong>11,9 s</strong>.</p>
+
+  <div class="cifras">
+    <div class="cifra"><div class="v">×16.3</div><div class="k">latencia más rápida (tick 100)</div></div>
+    <div class="cifra"><div class="v">×208</div><div class="k">payload más pequeño (tick 100)</div></div>
+    <div class="cifra"><div class="v">×59</div><div class="k">menos humo (tick 100)</div></div>
+    <div class="cifra"><div class="v">377 925</div><div class="k">celdas SMOKE en volumétrico (vs 6 359)</div></div>
+  </div>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    El cuello de botella del volumétrico es el <strong>humo</strong>: pasa de 572 a
+    <strong>377 925</strong> celdas en 100 ticks, y eso dispara la física (presión,
+    advección en 3D) y el <strong>payload</strong> del protocolo (154 664 celdas
+    cambiadas por tick saturan el canal API↔Godot). Para una herramienta interactiva
+    de planificación, es inusable: «se peta enseguida». El modo superficie elimina
+    el humo del cálculo (aire = <code>EMPTY</code>) y añade enfriamiento ambiente, así
+    que el frente activo deja de crecer sin límite.
+  </div>
+
+  <!-- ═══════════════════════════ CÓMO ACTIVARLO ═══════════════════════════ -->
+  <h2>Cómo activar el modo volumétrico desde la API</h2>
+  <p>El binario arranca <strong>siempre</strong> en superficie. Para cambiar de modo
+    se usa el payload opcional de <code>POST /reset</code>: la API fija el modo
+    <em>y</em> resetea en la misma llamada, porque el modo solo afecta a los
+    cuadrantes que se activen <strong>después</strong> — resetear garantiza un
+    arranque limpio.</p>
+
+  <pre><code># Activar volumétrico (la API lo combina con un RESET limpio)
+curl -X POST localhost:8000/reset \
+     -H 'Content-Type: application/json' \
+     -d '{"physics_mode": "volumetric"}'
+# → {"status": "ok", "physics_mode": "volumetric"}
+
+# Comprobar el modo activo en cualquier momento
+curl localhost:8000/status
+# → {"physics_mode": "volumetric"}
+
+# Volver al modo de producción
+curl -X POST localhost:8000/reset -d '{"physics_mode": "surface"}'</code></pre>
+
+  <p>Por debajo, la API traduce eso al comando <code>PHYSICS_MODE volumetric</code>
+    del motor (seguido de <code>RESET</code>); el motor responde <code>MODE
+    volumetric</code> y la API lo confirma. Si omites <code>physics_mode</code> en
+    <code>/reset</code>, el modo activo <strong>no se toca</strong>: solo se limpia el
+    estado del incendio.</p>
+
+  <div class="nota">
+    <strong>El número de capas (K) NO se expone por la API.</strong> Por diseño queda
+    <em>hardcoded</em> a 1 en modo superficie. El motor sí acepta un comando
+    <code>SURFACE_LAYERS N</code> para tunear K (se usó para calibrar la propagación),
+    pero no hay endpoint HTTP para ello: la API solo ofrece el conmutador binario
+    superficie ⇄ volumétrico.
+  </div>
+
+  <!-- ═══════════════════════════ IMPLICACIONES ════════════════════════════ -->
+  <h2>Implicaciones de encenderlo</h2>
+  <table>
+    <thead><tr><th>Dimensión</th><th>Qué pasa en volumétrico</th></tr></thead>
+    <tbody>
+      <tr><td><b>Rendimiento</b></td><td>Latencia <strong>super-lineal</strong>: ~3,2 s/tick al tick 100 y subiendo. Inutilizable en interactivo.</td></tr>
+      <tr><td><b>Payload de red</b></td><td>Hasta <strong>154 664</strong> celdas cambiadas por tick → satura el protocolo API↔Godot. Godot tiene que renderizar miles de quads de humo.</td></tr>
+      <tr><td><b>Memoria</b></td><td><em>Memory-bound</em>: ~150 MB/tick por la jerarquía de cachés. El paralelismo OpenMP apenas ayuda (el cuello no es CPU).</td></tr>
+      <tr><td><b>Sin enfriamiento</b></td><td>El enfriamiento ambiente (M2) es solo del modo superficie. En volumétrico el frente caliente <strong>crece sin acotar</strong>.</td></tr>
+      <tr><td><b>Evaluación de caminos</b></td><td>La métrica (<code>/evaluar</code>, <code>/puntuar</code>) está calibrada para superficie. En volumétrico sería lenta y se aleja del «modelo simplificado» que pide la propuesta.</td></tr>
+      <tr><td><b>Para qué SÍ sirve</b></td><td>Demo técnica en la defensa: enseñar que el motor es un fluido 3D real (advección, presión, buoyancy, columna de humo) — valor de exhibición, no de producto.</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════ POR QUÉ NO SE BORRA ══════════════════════ -->
+  <h2>Por qué no se borró</h2>
+  <p>La maquinaria volumétrica <strong>no se elimina</strong>: se desactiva por flag.
+    Dos razones. Primera, es una <strong>demostración técnica</strong> valiosa para
+    la defensa —probar que el motor implementa un solver de fluidos completo, no un
+    autómata de juguete—. Segunda, está cubierta por la
+    <a href="tests.html">suite de tests</a> de física, que la mantiene viva y
+    correcta. El modo volumétrico es la <em>capacidad</em>; el modo superficie es el
+    <em>producto</em>.</p>
+
+  <footer class="pie">
+    En una frase: el motor <strong>puede</strong> simular 20 niveles de fuego y humo
+    en 3D, pero el TFG <strong>solo necesita 1</strong>. K=1 da la difusión por
+    adyacencia que pide la propuesta a una fracción del coste; K=20 queda tras un
+    flag (<code>POST /reset {"physics_mode":"volumetric"}</code>) como demo técnica.
+    Vuelve al <a href="index.html">índice</a> o mira
+    <a href="arquitectura.html">cómo la API orquesta el motor</a>.
+  </footer>
+
+</div>
+</body>
+</html>

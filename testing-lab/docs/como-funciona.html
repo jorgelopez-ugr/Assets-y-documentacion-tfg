@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cómo está construido el testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+<style>
+  /* Diagrama de tubería (pipeline). */
+  .flow {
+    display: flex; flex-wrap: wrap; align-items: stretch; gap: .5rem;
+    margin: 1.6rem 0; justify-content: center;
+  }
+  .flow .box {
+    flex: 1 1 130px; min-width: 120px;
+    background: var(--papel); border: 1px solid var(--linea);
+    border-top: 3px solid var(--acento); border-radius: 10px;
+    padding: .8rem .7rem; text-align: center;
+  }
+  .flow .box.alt { border-top-color: var(--acento2); }
+  .flow .box .big { font-weight: 700; font-size: .98rem; color: var(--titulo); }
+  .flow .box .small { font-size: .78rem; color: var(--tinta-soft); margin-top: .25rem; }
+  .flow .box code { font-size: .8em; }
+  .flow .arrow {
+    align-self: center; font-size: 1.4rem; color: var(--tinta-soft);
+    font-weight: 700; flex: 0 0 auto;
+  }
+  .dos-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.4rem 0; }
+  .dos-col .col { border-radius: 10px; padding: 1rem 1.2rem; }
+  .dos-col .si  { background: rgba(87, 211, 154, .08); border: 1px solid rgba(87, 211, 154, .28); }
+  .dos-col .no  { background: rgba(255, 133, 133, .07); border: 1px solid rgba(255, 133, 133, .28); }
+  .dos-col h3 { margin-top: 0; }
+  .dos-col .si h3 { color: var(--ok); }
+  .dos-col .no h3 { color: var(--acento2); }
+  .dos-col ul { margin: .4rem 0 0; padding-left: 1.1rem; }
+  .dos-col li { margin: .3rem 0; font-size: .94rem; }
+  @media (max-width: 640px) { .dos-col { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · cómo funciona · <a href="index.html">índice</a></p>
+    <h1>Cómo está construido el testing-lab</h1>
+    <p class="sub">La idea en una frase: <strong>probar y dibujar las funciones
+      reales del motor, una a una, sin arrancar el motor.</strong> Ni API, ni
+      Godot, ni bucle de simulación, ni red. Aquí está el truco que lo hace
+      posible.</p>
+  </header>
+
+  <!-- ═══════════════════════════ EL TRUCO ═════════════════════════════════ -->
+  <h2>El truco: el motor es <em>header-only</em></h2>
+  <p>El motor de física vive entero en cabeceras (<code>engine/buoyancy.h</code>,
+    <code>presion.h</code>, <code>adveccion.h</code>…): la definición completa de
+    cada función está en el <code>.h</code>, no solo su firma. Eso permite que una
+    pequeña sonda C++ haga <code>#include</code> de esa cabecera y llame a la
+    función <strong>exactamente la misma</strong> que compila el motor — sin
+    enlazar nada del resto (ni <code>main.cpp</code>, ni la clase
+    <code>Simulacion</code>, ni la API).</p>
+
+  <div class="nota">
+    <strong>Incluir una cabecera es leerla, no tocarla.</strong> La sonda
+    <code>#include</code>-a el código del motor en modo solo lectura: no lo
+    modifica, no lo reescribe, no lo reimplementa. Por eso lo que medimos es el
+    comportamiento <em>real</em> del motor, no una copia que podría desviarse.
+  </div>
+
+  <!-- ═══════════════════════════ EL PIPELINE ══════════════════════════════ -->
+  <h2>El recorrido de una medición</h2>
+  <p>Cada experimento sigue siempre la misma tubería. El C++ ejecuta la función;
+    Python solo lanza el binario y dibuja lo que sale por la salida estándar:</p>
+
+  <div class="flow">
+    <div class="box"><div class="big">engine/<i>op</i>.h</div><div class="small">la función real del motor</div></div>
+    <div class="arrow">→</div>
+    <div class="box"><div class="big">probe_<i>op</i>.cpp</div><div class="small"><code>#include</code> + llama a la función sobre datos sintéticos</div></div>
+    <div class="arrow">→</div>
+    <div class="box"><div class="big">bin/probe_<i>op</i></div><div class="small">binario (g++ −O2) que vuelca <b>CSV</b> a stdout</div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big"><i>op</i>.py</div><div class="small">lanza el binario, parsea el CSV y <b>dibuja</b></div></div>
+    <div class="arrow">→</div>
+    <div class="box alt"><div class="big">out/<i>op</i>.png · gif</div><div class="small">la figura</div></div>
+  </div>
+
+  <p>En paralelo, un <code>test_<i>op</i>.py</code> lanza la misma sonda y verifica
+    un <strong>invariante físico</strong> del CSV (p. ej. "la divergencia baja", "el
+    pico difunde"), para que las figuras nunca mientan.</p>
+
+  <!-- ═══════════════════════════ QUÉ CORRE Y QUÉ NO ═══════════════════════ -->
+  <h2>Qué se ejecuta de verdad… y qué no</h2>
+  <div class="dos-col">
+    <div class="col si">
+      <h3>SÍ se ejecuta</h3>
+      <ul>
+        <li>La <b>función real</b> del motor (<code>aplicarBuoyancy</code>,
+          <code>resolverPresion</code>, <code>advectar</code>…), compilada con el
+          mismo <code>g++ −O2</code>.</li>
+        <li>Sobre un <code>SubGrid</code> 50×50×20 <b>de verdad</b> (la misma
+          estructura de datos del motor).</li>
+        <li>Con <b>datos sintéticos que yo controlo</b>: cualquier campo de
+          temperatura, velocidad o estado que quiera.</li>
+      </ul>
+    </div>
+    <div class="col no">
+      <h3>NO se ejecuta</h3>
+      <ul>
+        <li>El <b>bucle de simulación</b> (clase <code>Simulacion</code>): ticks,
+          cuadrantes, activación, halos.</li>
+        <li>La <b>API FastAPI</b> ni el protocolo stdin/stdout del motor.</li>
+        <li><b>Godot</b>, la red, <code>world.dat</code>, el DEM real.</li>
+        <li>Nada de física en <b>Python</b>: solo lanza el binario y dibuja.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="demuestra">
+    <span class="lbl">Por qué importa</span>
+    Como aislamos la función del resto, podemos <strong>meterle cualquier
+    carga</strong> — mil cuadrantes, un disco girando mil veces, un foco
+    imposible — sin el límite que impone la simulación real. Eso es justo lo que
+    permite medir el <strong>techo de rendimiento</strong> (la curva O(n) de
+    <a href="buoyancy.html">buoyancy</a>) y ver la física <strong>paso a
+    paso</strong> (Jacobi iteración a iteración) que en el motor completo quedaría
+    enterrada.
+  </div>
+
+  <!-- ═══════════════════════════ CÓDIGO MÍNIMO ════════════════════════════ -->
+  <h2>El ejemplo más pequeño posible</h2>
+  <p>Así de corta es una sonda. Construye un grid, pone un dato, llama a la función
+    real y vuelca el resultado:</p>
+  <pre><code>// probe (C++)
+#include "../../engine/buoyancy.h"   // la función REAL del motor (solo lectura)
+#include &lt;cstdio&gt;
+
+int main() {
+    SubGrid g; g.inicializar();
+    Celda&amp; c = g.get(25, 25, 0);
+    c.temperature = 800;                 // dato sintético que YO controlo
+    c.state = EstadoCelda::BURNING;
+
+    aplicarBuoyancy(g);                  // ← la MISMA función que llama el motor
+
+    std::printf("%f\n", c.velocity.z);   // vuelco el resultado a stdout
+}</code></pre>
+
+  <p>Y el experimento Python no sabe nada de física: lanza el binario y dibuja.</p>
+  <pre><code># experiment (Python)
+salida = subprocess.run(["bin/probe_buoyancy"], capture_output=True, text=True).stdout
+vz = float(salida)                       # parsea el CSV
+plt.plot(...); plt.savefig("out/buoyancy.png")   # Python SOLO dibuja</code></pre>
+
+  <!-- ═══════════════════════════ ANATOMÍA ═════════════════════════════════ -->
+  <h2>Anatomía de cada operación</h2>
+  <p>Por cada función del motor hay cuatro piezas, siempre con el mismo patrón:</p>
+  <table>
+    <thead><tr><th>Pieza</th><th>Lenguaje</th><th>Hace</th></tr></thead>
+    <tbody>
+      <tr><td><code>probes/probe_&lt;op&gt;.cpp</code></td><td>C++</td><td>llama a la función real sobre un grid sintético, vuelca CSV</td></tr>
+      <tr><td><code>experiments/&lt;op&gt;.py</code></td><td>Python</td><td>lanza la sonda, parsea, grafica (PNG/GIF) en <code>out/</code></td></tr>
+      <tr><td><code>tests/test_&lt;op&gt;.py</code></td><td>Python</td><td>verifica un invariante físico del CSV</td></tr>
+      <tr><td><code>docs/&lt;op&gt;.html</code></td><td>HTML</td><td>explica qué muestra cada figura y qué demuestra</td></tr>
+    </tbody>
+  </table>
+
+  <!-- ═══════════════════════════ SEGURIDAD ════════════════════════════════ -->
+  <h2>La invariante de seguridad</h2>
+  <p>El laboratorio <strong>nunca</strong> modifica el motor ni nada del proyecto:
+    solo lo <em>usa</em>. Todo lo que genera (binarios, CSV, PNG, GIF, el entorno
+    Python) vive bajo <code>testing-lab/</code> y está en <code>.gitignore</code>.
+    Tras correr el lab, <code>git status</code> solo debería mostrar archivos de
+    <code>testing-lab/</code> — nunca nada bajo <code>engine/</code>,
+    <code>api/</code>, <code>godotUI/</code>, <code>data/</code> ni
+    <code>tools/</code>.</p>
+
+  <footer class="pie">
+    En resumen: el motor pone la física (en cabeceras header-only), C++ la ejecuta
+    aislada sobre datos a medida, y Python solo orquesta y dibuja. Probamos el
+    código real del motor sin el peso del motor entero.
+    Vuelve al <a href="index.html">índice de operaciones</a>.
+  </footer>
+
+</div>
+</body>
+</html>

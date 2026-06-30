@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>world.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>world.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="cuadrante-y-celda.html">Cuadrante y Celda</a> · <a href="build-world.html">build_world</a></p>
+<p><strong>Archivo fuente:</strong> <code>engine/world.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code> al arrancar el proceso</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>Define <code>WorldData</code>, la estructura raíz que carga <code>data/world.dat</code> (binario
+generado offline por <a href="build-world.html">tools/build_world.py</a>) y queda como
+fuente de verdad estática durante toda la sesión.</p>
+<hr>
+<h2 id="worlddata"><code>WorldData</code></h2>
+<pre><code class="language-cpp">struct WorldData {
+    static constexpr char MAGIC[4] = {'W', 'L', 'D', '1'};
+
+    uint16_t width_metros = 0;             // 1598
+    uint16_t depth_metros = 0;             // 1393
+    uint8_t  cuadrantes_x = 0;             // 32
+    uint8_t  cuadrantes_z = 0;             // 28
+    uint8_t  celdas_por_cuadrante_x = 0;   // 50
+    uint8_t  celdas_por_cuadrante_z = 0;   // 50
+    uint8_t  niveles_y = 0;                // 20
+
+    std::vector&lt;Cuadrante&gt; cuadrantes;     // 896
+
+    static WorldData cargar(const std::string&amp; ruta);
+};
+</code></pre>
+<p><code>cargar</code> valida el magic <code>WLD1</code>, comprueba que las dimensiones de cuadrante
+coinciden con las constantes del motor (<code>CELDAS_QUAD_X/Z</code>, <code>NIVELES_Y</code>),
+parsea los 896 cuadrantes y verifica que no quedan bytes sobrantes.</p>
+<hr>
+<h2 id="formato-binario-de-worlddat">Formato binario de <code>world.dat</code></h2>
+<p>Little-endian, sin padding entre campos. Debe coincidir exactamente con lo
+que escribe <code>tools/build_world.py</code>.</p>
+<h3 id="header-13-bytes">Header (13 bytes)</h3>
+<pre><code>4s   magic = &quot;WLD1&quot;
+u16  width_metros
+u16  depth_metros
+u8   cuadrantes_x
+u8   cuadrantes_z
+u8   celdas_por_cuadrante_x
+u8   celdas_por_cuadrante_z
+u8   niveles_y
+</code></pre>
+<h3 id="por-cada-cuadrante-en-orden-id-ascendente">Por cada cuadrante (en orden id ascendente)</h3>
+<pre><code>u32  id
+f32  origen.x
+f32  origen.z
+f32  pendiente_media
+f32  pendiente_dir.x
+f32  pendiente_dir.z
+u8   num_vecinos
+u32  vecinos[num_vecinos]
+
+Por cada celda de superficie (cz outer, cx inner — 2.500 celdas):
+  u8   y_superficie
+  f32  fuel_coefficient
+</code></pre>
+<p>Tamaño total de <code>world.dat</code>: ~11 MB.</p>
+<hr>
+<h2 id="como-se-usa">Cómo se usa</h2>
+<pre><code class="language-cpp">#include &quot;world.h&quot;
+
+int main(int argc, char** argv) {
+    std::string ruta = argv[1];
+    WorldData world = WorldData::cargar(ruta);
+    // world.cuadrantes[i] está poblado con datos estáticos.
+    // grid (dinámico) sigue vacío hasta que Simulacion lo active.
+}
+</code></pre>
+<p><code>WorldData::cargar</code> lanza <code>std::runtime_error</code> si:</p>
+<ul>
+<li>el fichero no se puede abrir,</li>
+<li>el magic no coincide (<code>WLD1</code>),</li>
+<li>las dimensiones de cuadrante no coinciden con las del binario compilado,</li>
+<li>hay bytes sobrantes al final (formato corrompido o versión distinta).</li>
+</ul>
+<hr>
+<h2 id="implementacion-de-la-lectura">Implementación de la lectura</h2>
+<p><code>world.h</code> es header-only. <code>cargar</code> lee campo a campo con <code>std::ifstream</code> y
+una función helper:</p>
+<pre><code class="language-cpp">template &lt;typename T&gt;
+T leer_valor(std::istream&amp; in) {
+    T v{};
+    leer(in, &amp;v, sizeof(T));
+    return v;
+}
+</code></pre>
+<p>No usamos <code>read</code> directo de la estructura porque el padding y el
+alineamiento de C++ no coinciden necesariamente con el formato binario.
+Leer campo a campo garantiza portabilidad entre compiladores.</p>
+<hr>
+<h2 id="relacion-con-el-script-offline">Relación con el script offline</h2>
+<p><code>tools/build_world.py</code> y <code>engine/world.h</code> son las <strong>dos caras del mismo
+formato</strong>. Cualquier cambio en uno debe replicarse en el otro:</p>
+<ul>
+<li>las constantes (<code>MAGIC</code>, <code>niveles_y</code>, <code>cuadrantes_x/z</code>, etc.)</li>
+<li>el orden y tipos exactos de los campos</li>
+<li>el orden de iteración de las celdas (<code>cz</code> outer, <code>cx</code> inner)</li>
+</ul>
+<p>Tests cruzados:</p>
+<ul>
+<li><code>tools/test_build_world.py</code> valida lo que escribe el script.</li>
+<li><code>engine/test_world_loader.cpp</code> valida lo que lee el motor del fichero
+  generado por el script.</li>
+</ul>
+<p>Si los dos pasan, formato y código están sincronizados.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

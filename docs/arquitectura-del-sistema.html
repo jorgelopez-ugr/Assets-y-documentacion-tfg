@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arquitectura del sistema · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Visión general</p>
+    <h1>Arquitectura del sistema</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a></p>
+<h2 id="vision-general">Visión general</h2>
+<p>El sistema es un pipeline de tres capas independientes. Cada capa habla con la
+siguiente por una interfaz mínima y bien definida. Ninguna conoce los detalles
+internos de las otras.</p>
+<pre><code>┌──────────────────────────────────────────────────────────────────────┐
+│  HERRAMIENTAS (tools/)  —  OFFLINE, una vez por terreno              │
+│  Convierte heightmap_16bit.png en data/world.dat (binario)           │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │ data/world.dat (versionado)
+┌──────────────────────────▼───────────────────────────────────────────┐
+│  MOTOR C++ (engine/)                                                 │
+│  Proceso persistente. Carga world.dat al arrancar.                   │
+│  Recibe comandos por stdin, emite CHANGED + TICK_DONE por stdout     │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │ stdin/stdout (texto, comandos)
+┌──────────────────────────▼───────────────────────────────────────────┐
+│  API (api/)                                                          │
+│  Mantiene el proceso C++ vivo. Acumula CHANGED en memoria.           │
+│  Expone HTTP a Godot.                                                │
+└──────────────────────────┬───────────────────────────────────────────┘
+                           │ HTTP / JSON
+┌──────────────────────────▼───────────────────────────────────────────┐
+│  GODOT (godot/)                                                      │
+│  Pinta los diffs de POST /tick. No conoce nada de física.            │
+└──────────────────────────────────────────────────────────────────────┘
+</code></pre>
+<h2 id="por-que-esta-separacion">Por qué esta separación</h2>
+<p><strong>Godot no hace física.</strong> Solo visualiza. Si el motor cambia o se reescribe,
+ni la API ni Godot tienen que cambiar.</p>
+<p><strong>La API no hace física.</strong> Solo orquesta. Si Godot fuera reemplazado por una
+web app, el motor y las herramientas no cambiarían.</p>
+<p><strong>El motor no conoce la red.</strong> Recibe texto por stdin, devuelve texto por
+stdout. Se puede compilar, ejecutar y testear de forma autónoma sin levantar
+ningún servidor.</p>
+<h2 id="el-terreno-es-estatico">El terreno es estático</h2>
+<p>El DEM, los vecinos de cada cuadrante, la dirección de pendiente y, en el
+futuro, los coeficientes de combustibilidad por especie no cambian nunca
+durante la simulación. Por eso todo lo precomputable vive en
+<code>data/world.dat</code> (binario, generado por <a href="build-world.html">build_world</a>) y se versiona.</p>
+<p>El motor lo carga al arrancar y lo considera inmutable. El estado <strong>dinámico</strong>
+(qué celda arde) vive solo en RAM y solo en los cuadrantes activos.</p>
+<h2 id="cuadrantes-y-activacion-dinamica">Cuadrantes y activación dinámica</h2>
+<p>El terreno se trocea en una rejilla de cuadrantes:</p>
+<pre><code>1598 m horizontal / 50 m por cuadrante = 32 cuadrantes en X
+1393 m horizontal / 50 m por cuadrante = 28 cuadrantes en Z
+                                        = 896 cuadrantes totales
+</code></pre>
+<p>Cada cuadrante tiene un <strong>SubGrid</strong> de 50×50×20 = 50.000 celdas (1×1 m
+horizontal, ~7 m vertical). Solo los cuadrantes con actividad se procesan; el
+resto no existe en RAM.</p>
+<pre><code>INACTIVO  → no se procesa, su grid 3D no está alocado
+ACTIVO    → física completa cada tick
+HALO      → procesado parcialmente para propagar bordes (futuro)
+</code></pre>
+<p>Más detalle: <a href="cuadrante-y-celda.html">Cuadrante y Celda</a></p>
+<h2 id="las-cuatro-fases-de-un-tick">Las cuatro fases de un tick</h2>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Revisión 2026-06-27</div><div class="callout-body"><p>El tick real ejecuta <strong><code>aplicarViento</code></strong> (#74) antes de la buoyancy y, en modo
+superficie (el del producto), <strong>enfriamiento</strong> dentro de <code>aplicarReaccion</code>
+(#131) e <strong>ignición por adyacencia</strong> (<code>propagar_adyacencia</code>, #132). El listado
+de abajo omite esas fases (y la sección "Compatibilidad con la física antigua"
+ya no es literal: <code>reaccion.h</code> ganó el parámetro de enfriamiento y
+<code>presion</code>/<code>adveccion</code> pasaron a buffers). Versión canónica en
+<a href="motor-de-fuego-las-operaciones-del-tick-y-como-se-combinan.html">Motor de fuego — las operaciones del tick y cómo se combinan</a>.</p></div></div>
+<p>Cada <code>POST /tick</code> ejecuta sobre cada cuadrante ACTIVO los cuatro pasos físicos
+heredados del motor monolítico anterior, más una fuente de calor sostenido y
+los pasos de gestión de cuadrantes:</p>
+<pre><code>PARA CADA CUADRANTE ACTIVO:
+  1. aplicarBuoyancy   →  el calor genera velocidad ascendente
+  2. resolverPresion   →  corrige la divergencia del campo de velocidad
+  3. advectar          →  transporta temperatura, densidad, reacción
+  4. aplicarReaccion   →  consume combustible, FUEL→BURNING, BURNING→SMOKE
+  5. sostener_burning  →  reinyecta TEMP_IGNICION en celdas BURNING
+
+DESPUÉS:
+  6. propagar_halos    →  intercambia bordes entre cuadrantes activos
+  7. evaluar_desactivacion  →  desactiva cuadrantes sin actividad
+  8. evaluar_activacion     →  activa vecinos cuyo borde supera UMBRAL
+</code></pre>
+<p>El orden 7→8 (desactivar antes de activar) es crítico: un vecino recién
+activado no se desactiva el mismo tick. Y <code>sostener_burning</code> es necesario
+porque la advección tiende a drenar el calor del foco — sin reinyección,
+una celda BURNING termina con temperatura cero en un par de ticks.</p>
+<p>Ver detalle: <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<h2 id="protocolo-motor-api">Protocolo motor ↔ API</h2>
+<p>El motor C++ es un proceso vivo durante toda la sesión. La comunicación es
+por texto, un comando o respuesta por línea:</p>
+<pre><code>API                              Motor C++
+ │                                  │
+ │── &quot;IGNITE 275 275\n&quot;  ──────────▶│  (no responde)
+ │── &quot;TICK\n&quot;            ──────────▶│  (procesa)
+ │                                  │
+ │◀──── &quot;CHANGED 275 4 275 BURNING 800\n&quot; ─│
+ │◀──── &quot;CHANGED 275 5 275 AIR 250\n&quot;      │
+ │◀──── ...                                │
+ │◀──── &quot;TICK_DONE 50000\n&quot; ───────────────│
+ │── &quot;RESET\n&quot;  ────────────────────▶│
+ │── &quot;QUIT\n&quot;   ────────────────────▶│  (cierre limpio)
+</code></pre>
+<p>Solo se emiten <strong>CHANGED</strong> para celdas que han cambiado de estado o
+temperatura más de un umbral (0.5 °C). En un tick típico viajan miles de
+celdas, no millones.</p>
+<p>Ver el protocolo formal: <a href="protocolo-del-motor.html">Protocolo del Motor</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<hr>
+<h2 id="optimizacion-solo-lo-que-cambia-y-solo-lo-que-arde">Optimización: solo lo que cambia y solo lo que arde</h2>
+<p>Tres niveles de filtrado eliminan trabajo y tráfico inútil:</p>
+<ol>
+<li><strong>Cuadrantes inactivos no se procesan.</strong> Tras una ignición típica solo
+   1–10 cuadrantes están activos de los 896 totales.</li>
+<li><strong>El motor solo emite celdas que cambian</strong> respecto al último valor
+   emitido por celda. La mayoría de la simulación no genera CHANGED.</li>
+<li><strong><code>/tick</code> devuelve solo los diffs</strong> del último tick (transiciones a/desde
+   BURNING/SMOKE; los cambios de solo-temperatura se filtran). <code>/snapshot</code> da la
+   foto completa para sincronizar al conectar. Es el protocolo de diffs (MVP7).</li>
+</ol>
+<p>Resultado: Godot puede hacer polling a 30–60 fps sin saturar la red local.</p>
+<hr>
+<h2 id="compatibilidad-con-la-fisica-antigua">Compatibilidad con la física antigua</h2>
+<p>Las cuatro cabeceras de física (<code>buoyancy.h</code>, <code>reaccion.h</code>, <code>adveccion.h</code>,
+<code>presion.h</code>) <strong>no han cambiado</strong> respecto al motor monolítico anterior. Operan
+sobre <code>Grid&amp;</code>, que ahora es un <code>using Grid = SubGrid;</code> — el SubGrid (50×50×20
+de un cuadrante) replica la interfaz de la antigua estructura monolítica.</p>
+<p>Esto deja deuda técnica visible: las cabeceras siguen hablando de "Grid" en
+sus argumentos. La refactorización a <code>Cuadrante&amp;</code> o <code>SubGrid&amp;</code> directo se
+pospuso al cierre del rediseño porque no era necesaria para el criterio
+funcional. Ver: <a href="mvp-arquitectura-de-cuadrantes.html">MVP — Arquitectura de Cuadrantes</a> sección "Lo que NO
+entró".</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

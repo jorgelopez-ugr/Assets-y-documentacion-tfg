@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interpolación — testing-lab</title>
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../../index.html">Inicio</a><a href="../../docs/index.html">Documentación</a><a href="../../testing-lab/docs/index.html" class="active">Laboratorio</a><a href="../../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+
+  <header class="hero">
+    <p class="kicker">testing-lab · fundamento matemático · <a href="index.html">índice</a></p>
+    <h1>Interpolación — leer entre celdas</h1>
+    <p class="sub">El ladrillo invisible de la <a href="adveccion.html">advección</a>:
+      cuando necesitamos el valor de un campo en un punto que cae <strong>entre</strong>
+      las celdas, lo calculamos mezclando las vecinas según la cercanía. Pura
+      media ponderada.</p>
+  </header>
+
+  <!-- ════════════════════════════ EL PROBLEMA ═════════════════════════════ -->
+  <h2>El problema</h2>
+  <p>La rejilla solo guarda valores en puntos enteros (el centro de cada celda).
+    Pero el backtrace semi-lagrangiano pregunta "¿cuánto valía el campo en
+    (x=1.7, y=2.3)?" — un punto donde <em>no hay</em> celda. La interpolación
+    inventa ese valor de forma razonable: lo estima a partir de las celdas que lo
+    rodean, pesando más las que están más cerca.</p>
+
+  <!-- ════════════════════════════ 1D LINEAL ═══════════════════════════════ -->
+  <h2>1D: interpolación lineal (el caso fácil)</h2>
+  <p>Entre dos valores <code>a</code> y <code>b</code> separados una celda, el
+    valor a una fracción <code>f</code> del camino es simplemente la recta que los
+    une:</p>
+  <div class="eq">
+    valor = (1 − f) · a &nbsp;+&nbsp; f · b
+    <small>f = 0 → a · f = 1 → b · f = 0.5 → punto medio</small>
+  </div>
+  <p>Cada extremo pesa según lo cerca que esté el punto: si <code>f = 0.7</code>,
+    el valor es 70&nbsp;% de <code>b</code> y 30&nbsp;% de <code>a</code>.</p>
+
+  <!-- ════════════════════════════ 2D BILINEAL ═════════════════════════════ -->
+  <h2>2D: interpolación bilineal (lo que usa el motor)</h2>
+  <p>En 2D el punto cae dentro de una celda con <strong>4 esquinas</strong>. La
+    fórmula es la misma idea, con un peso por esquina = producto de las cercanías
+    en x y en y:</p>
+  <div class="eq">
+    valor = v<sub>00</sub>(1−fx)(1−fy) + v<sub>10</sub>·fx(1−fy) +
+            v<sub>01</sub>(1−fx)·fy + v<sub>11</sub>·fx·fy
+    <small>los 4 pesos siempre suman 1 → el resultado es un promedio, nunca una invención</small>
+  </div>
+
+  <figure>
+    <img src="../out/interpolacion.png" alt="Superficie bilineal y su construcción por bordes">
+    <figcaption>
+      <b>Izquierda:</b> con 4 esquinas de valores distintos (120, 800, 300, 520),
+      <code>interpolar</code> teje una superficie suave "clavada" en ellas.
+      <b>Derecha:</b> cómo se construye — se interpola cada borde horizontal
+      (lineal en x) y luego se interpola en vertical entre los dos bordes (lineal
+      en y). De ahí el nombre <em>bi</em>-lineal.
+    </figcaption>
+  </figure>
+
+  <p>Y aquí se ve lo de "pesar por cercanía": al mover el punto por la celda, el
+    peso de cada esquina sube cuando el punto se le acerca, y el valor es la suma
+    ponderada:</p>
+
+  <figure>
+    <img src="../out/interpolacion.gif" alt="Animación de los pesos de las 4 esquinas según se mueve el punto">
+    <figcaption>El punto recorre la celda; las barras son el peso de cada esquina
+      (más cerca = más peso) y arriba, el valor resultante. En el centro las 4
+      pesan igual (0.25) → el valor es la media.</figcaption>
+  </figure>
+
+  <div class="demuestra">
+    <span class="lbl">Qué demuestra</span>
+    <p style="margin-top:.2rem">Tres propiedades que importan:</p>
+    <ol style="margin:.2rem 0 .2rem 1.1rem">
+      <li><strong>Nunca hay overshoot:</strong> como los pesos suman 1 y son
+        positivos, el valor interpolado <em>siempre</em> queda entre el mínimo y el
+        máximo de las esquinas. No puede inventar un valor más caliente que el más
+        caliente de alrededor.</li>
+      <li><strong>Exacta en las esquinas:</strong> justo sobre una celda, el valor
+        es el de esa celda (peso 1).</li>
+      <li><strong>Suave:</strong> la transición es continua, sin saltos.</li>
+    </ol>
+    Esa primera propiedad es la que hace que el semi-lagrangiano sea
+    <strong>incondicionalmente estable</strong>: por mucho que avances, copiar
+    valores interpolados nunca genera extremos nuevos que exploten.
+  </div>
+
+  <div class="nota">
+    <strong>En 3D: trilineal.</strong> El motor trabaja en 3D, así que el punto
+    cae dentro de un cubo con <strong>8 esquinas</strong> y la fórmula tiene 8
+    pesos (producto de las cercanías en x, y, z). Es exactamente la misma idea con
+    una dimensión más — la función <code>interpolar</code> del motor ya lo hace
+    así (ver <code>engine/adveccion.h</code>).
+  </div>
+
+  <!-- ════════════════════════════ REPRODUCIR ══════════════════════════════ -->
+  <h2>Cómo reproducir</h2>
+  <pre><code>bash testing-lab/build.sh
+testing-lab/.venv/bin/python testing-lab/experiments/interpolacion.py   # superficie + GIF de pesos
+testing-lab/.venv/bin/python testing-lab/tests/test_interpolacion.py</code></pre>
+
+  <footer class="pie">
+    Función real del motor: <code>interpolar</code> (<code>engine/adveccion.h</code>).
+    La superficie se muestrea con esa función; los pesos del GIF son los de la
+    fórmula bilineal, idénticos a los que aplica el motor. → Vuelve a
+    <a href="adveccion.html">la advección</a>, que la usa en cada backtrace.
+  </footer>
+
+</div>
+</body>
+</html>

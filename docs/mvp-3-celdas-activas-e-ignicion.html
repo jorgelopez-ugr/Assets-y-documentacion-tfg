@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP 3 — Celdas Activas e Ignición · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · MVPs e hitos</p>
+    <h1>MVP 3 — Celdas Activas e Ignición</h1>
+  </header>
+  <article class="doc">
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Documento histórico (pre-refactor)</div><div class="callout-body"><p>Refleja un estado anterior al refactor de caminos forestales (jun 2026);
+se conserva como traza del proceso. El estado actual está en <a href="inicio.html">Inicio</a>.</p></div></div>
+<p>← <a href="inicio.html">Inicio</a> · <a href="arquitectura-del-sistema.html">Arquitectura del Sistema</a> · <a href="arquitectura-api.html">Arquitectura API</a></p>
+<h2 id="objetivo">Objetivo</h2>
+<p>Conectar el motor con Godot para visualizar fuego propagándose sobre el terreno real.
+El bucle funciona de extremo a extremo; la visualización puede ser simple (esferas).</p>
+<hr>
+<h2 id="decisiones-arquitectonicas">Decisiones arquitectónicas</h2>
+<ul>
+<li>
+<p><strong><code>GET /active_cells</code></strong> en lugar de polling de <code>GET /state</code>. El estado completo
+  de 100.000 celdas serializado pesa varios MB. Las celdas activas son siempre un
+  subconjunto pequeño — diferencia de varios órdenes de magnitud.</p>
+</li>
+<li>
+<p><strong>Ignición en el script, no en la API</strong> — el punto de fuego inicial se inyecta
+  al generar el JSON del terreno (<code>terrain_to_json.py --ignition-x X --ignition-z Z</code>)
+  y se carga con <code>POST /reset</code>. La API no necesita saber nada de ignición.</p>
+</li>
+<li>
+<p><strong>Y de ignición = superficie del heightmap</strong> — la celda de fuego se coloca al nivel
+  que le corresponde según el heightmap, no a Y=0 fijo.</p>
+</li>
+</ul>
+<hr>
+<h2 id="issues-cerradas">Issues cerradas</h2>
+<h3 id="21-get-active_cells"><code>#21</code> — <code>GET /active_cells</code></h3>
+<p>Filtra celdas con <code>state == "BURNING"</code> o <code>state == "SMOKE"</code>.
+Devuelve <code>{"cells": [{x, y, z, state}]}</code>.
+Sin estado inicializado → <code>{"cells": []}</code> (sin HTTP 400, para no romper el polling).</p>
+<h3 id="22-flags-ignition-xz-en-terrain_to_jsonpy"><code>#22</code> — Flags <code>--ignition-x/z</code> en <code>terrain_to_json.py</code></h3>
+<ul>
+<li>Sin flags → <code>cells: []</code> (comportamiento anterior intacto)</li>
+<li>Con ambos flags → una celda BURNING en <code>(ignition_x, y_surface, ignition_z)</code>
+  con <code>temperature: 800.0</code>, <code>reaction: 1.0</code></li>
+</ul>
+<pre><code class="language-bash">python3 terrain_to_json.py ../heightmap_16bit.png --ignition-x 50 --ignition-z 50
+</code></pre>
+<hr>
+<h2 id="correspondencia-grid-godot">Correspondencia grid → Godot</h2>
+<pre><code>pos_x = (x / 100.0) * ancho_del_planemesh
+pos_z = (z / 100.0) * alto_del_planemesh
+pos_y = altura_terreno_en(x, z) + offset_visual
+</code></pre>
+<p>El eje Y del motor (0–9) no se mapea directamente a la altura real de Godot —
+las esferas pueden flotar a altura fija sobre el punto XZ del terreno.</p>
+<hr>
+<h2 id="estado-al-cerrar-el-mvp-parte-claude-code">Estado al cerrar el MVP (parte Claude Code)</h2>
+<pre><code>api/main.py              ← GET /active_cells añadido
+api/test_endpoints.py    ← 6 tests nuevos (13 total)
+
+tools/terrain_to_json.py      ← --ignition-x, --ignition-z
+tools/test_terrain_to_json.py ← 7 tests nuevos (14 total)
+</code></pre>
+<p>La parte de Godot quedó pendiente de completar por el usuario
+(postpuesto a futuros milestones, ver MVP 3.5 para el motivo).</p>
+<p>Ver: <a href="build-world.html">build_world</a> · <a href="mvp-3-5-design-changes.html">MVP 3.5 — Design Changes</a></p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>

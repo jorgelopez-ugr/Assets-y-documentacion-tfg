@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adveccion.h · Documentación TFG</title>
+<link rel="stylesheet" href="../assets/estilo.css">
+</head>
+<body>
+<nav class="topnav"><a class="brand" href="../index.html">TFG · <b>caminos forestales</b></a><div class="links"><a href="../index.html">Inicio</a><a href="../docs/index.html" class="active">Documentación</a><a href="../testing-lab/docs/index.html">Laboratorio</a><a href="../galeria/index.html">Galería</a></div></nav>
+<div class="wrap">
+  <header class="hero">
+    <p class="kicker"><a href="index.html">Documentación</a> · Motor — clases</p>
+    <h1>adveccion.h</h1>
+  </header>
+  <article class="doc">
+<p>← <a href="inicio.html">Inicio</a> · <a href="pipeline-de-simulacion.html">Pipeline de Simulación</a></p>
+<div class="callout callout-warning"><div class="callout-title"><span class="callout-icon">⚠</span> Firma y cifras desactualizadas (revisado 2026-06-27)</div><div class="callout-body"><p>El concepto (semi-Lagrangiano + MacCormack + trilineal) está bien, pero la
+<strong>API cambió en MVP5/6</strong>: <code>advectar</code> ya no devuelve un grid nuevo por valor;
+opera <strong>in-place sobre buffers reutilizados</strong> (<code>advectar(grid, buf_adelante,
+buf_atras, dt)</code>) y se invoca desde <code>Simulacion::tick</code> (<code>engine/simulacion.h</code>),
+no desde <code>main.cpp</code>. Las cifras de memoria (grid <code>100×10×100</code>, ~10 MB) son del
+motor monolítico; hoy el grid es un <code>SubGrid</code> de 50×50×20 por cuadrante.</p></div></div>
+<p><strong>Archivo fuente:</strong> <code>engine/adveccion.h</code>
+<strong>Usado en:</strong> <code>engine/main.cpp</code> — paso 3 del tick (<code>g = advectar(g, p.dt)</code>)</p>
+<hr>
+<h2 id="para-que-existe-este-modulo">Para qué existe este módulo</h2>
+<p>La advección responde a la pregunta: <strong>¿cómo se mueve el material (calor, humo, combustible) a través del espacio?</strong></p>
+<p>Sin advección, el fuego no se propaga — solo se queda en la celda donde se encendió y se consume ahí. La advección es el mecanismo que transporta temperatura, densidad y reaction siguiendo el campo de velocidades que generan buoyancy y presión.</p>
+<hr>
+<h2 id="las-tres-funciones-y-su-relacion">Las tres funciones y su relación</h2>
+<p>Son una <strong>cadena de llamadas</strong>:</p>
+<pre><code>advectar
+  └── semiLagrangiano  (por cada celda)
+        └── interpolar  (para leer un punto entre celdas)
+</code></pre>
+<hr>
+<h2 id="interpolar-subrutina-de-geometria"><code>interpolar</code> — subrutina de geometría</h2>
+<pre><code class="language-cpp">static float interpolar(const Grid&amp; g, float x, float y, float z,
+                         std::function&lt;float(const Celda&amp;)&gt; campo)
+</code></pre>
+<p><strong>¿Por qué existe?</strong> El origen de una partícula en semi-Lagrangiano raramente cae exactamente en el centro de una celda — cae en algún punto flotante entre celdas. Necesitamos saber qué valor tiene el campo <em>en ese punto continuo</em>.</p>
+<p><strong>¿Cómo funciona?</strong> Rodea el punto con las 8 celdas vecinas que forman un cubo y hace un promedio ponderado: cuanto más cerca estás de un vértice, más pesa ese vértice.</p>
+<pre><code>punto (x=1.7, y=2.3, z=0.9)  →  fx=0.7, fy=0.3, fz=0.9
+
+    v010 ─────── v110
+   /│            /│
+ v011 ─────── v111 │
+  │  v000 ────│── v100
+  │ /         │ /
+ v001 ─────── v101
+</code></pre>
+<p>Cada vértice pesa la combinación de sus fracciones:
+- <code>v000</code> pesa <code>(1-fx)*(1-fy)*(1-fz)</code> — el más lejano pesa menos
+- <code>v111</code> pesa <code>fx * fy * fz</code> — el más cercano pesa más</p>
+<p>El resultado es la interpolación trilineal estándar de la dinámica de fluidos.</p>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Es `static`</div><div class="callout-body"><p>Solo se llama desde <code>semiLagrangiano</code>. No forma parte de la interfaz pública del módulo.</p></div></div>
+<hr>
+<h2 id="semilagrangiano-traza-de-donde-viene-el-material"><code>semiLagrangiano</code> — traza de dónde viene el material</h2>
+<pre><code class="language-cpp">static float semiLagrangiano(const Grid&amp; g, int x, int y, int z,
+                              float dt,
+                              std::function&lt;float(const Celda&amp;)&gt; campo)
+</code></pre>
+<p><strong>¿Por qué no simplemente "mover hacia adelante"?</strong> Mover partículas hacia adelante es inestable numéricamente — con <code>dt</code> grande el valor se dispara. La solución es hacer la pregunta al revés:</p>
+<blockquote>
+<p>En lugar de "¿adónde va este material?", pregunta "¿de dónde viene el material que va a llegar aquí?"</p>
+</blockquote>
+<pre><code>destino (x, y, z)  ←  rastreamos hacia atrás
+                         ox = x - dt * vel.x
+                         oy = y - dt * vel.y
+                         oz = z - dt * vel.z
+                       interpolamos en (ox, oy, oz)
+</code></pre>
+<p>Cuando <code>dt</code> es negativo (paso 2 de MacCormack), el trazado va en dirección contraria — hacia adelante en el tiempo.</p>
+<div class="callout callout-note"><div class="callout-title"><span class="callout-icon">✎</span> Es `static`</div><div class="callout-body"><p>Solo se llama desde <code>advectar</code>. No forma parte de la interfaz pública del módulo.</p></div></div>
+<hr>
+<h2 id="advectar-maccormack-en-3-pasos"><code>advectar</code> — MacCormack en 3 pasos</h2>
+<pre><code class="language-cpp">Grid advectar(const Grid&amp; g, float dt)
+</code></pre>
+<p><strong>Función pública.</strong> Devuelve un nuevo grid con <code>temperature</code>, <code>density</code> y <code>reaction</code> transportados. El grid original no se modifica.</p>
+<p><strong>¿Por qué no basta con semi-Lagrangiano simple?</strong> El semi-Lagrangiano básico introduce <strong>difusión numérica</strong>: el fuego se vuelve borroso con cada tick porque el promedio suaviza los bordes del frente de fuego.</p>
+<p>MacCormack añade un tercer paso que compensa ese error:</p>
+<pre><code>Paso 1 — adelante:    advectar el grid original con +dt
+                      (estimación del siguiente estado)
+
+Paso 2 — atrás:       advectar el resultado del paso 1 con -dt
+                      (estimar cuánto error introdujo el paso 1)
+
+Paso 3 — corrección:  resultado = adelante + 0.5 * (original - atrás)
+                      (compensar el error)
+</code></pre>
+<p>Es el mismo principio que el método predictor-corrector en ecuaciones diferenciales ordinarias.</p>
+<h3 id="los-tres-grids-temporales">Los tres grids temporales</h3>
+<pre><code class="language-cpp">Grid adelante  = g;   // resultado del paso 1
+Grid atras     = g;   // resultado del paso 2
+Grid resultado = g;   // salida final (paso 3)
+</code></pre>
+<p>Esto implica tener <strong>3 grids en memoria simultáneamente</strong> durante la advección.
+Con el grid actual (100×10×100), el pico de memoria es ~10 MB. Ver <a href="cuadrante-y-celda.html">Cuadrante y Celda</a>.</p>
+<h3 id="que-se-advecta-y-que-no">Qué se advecta y qué no</h3>
+<table>
+<thead>
+<tr>
+<th>Campo</th>
+<th>¿Se advecta?</th>
+<th>Motivo</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>temperature</code></td>
+<td>✅</td>
+<td>El calor se mueve con el fluido</td>
+</tr>
+<tr>
+<td><code>density</code></td>
+<td>✅</td>
+<td>El humo se mueve con el fluido</td>
+</tr>
+<tr>
+<td><code>reaction</code></td>
+<td>✅</td>
+<td>El combustible se transporta</td>
+</tr>
+<tr>
+<td><code>velocity</code></td>
+<td>❌</td>
+<td>No se auto-advecta (ver nota abajo)</td>
+</tr>
+<tr>
+<td><code>pressure</code></td>
+<td>❌</td>
+<td>Campo auxiliar, se recalcula cada tick</td>
+</tr>
+</tbody>
+</table>
+<hr>
+<h2 id="nota-lo-que-falta-mvp-futuro">Nota: lo que falta (MVP futuro)</h2>
+<p>La <strong>auto-advección de velocidad</strong> (<code>u·∇u</code>) no está implementada. En el paper de Nvidia, la velocidad también se transporta a sí misma, lo que produce movimientos de fluido más realistas (vórtices, turbulencia).</p>
+<p>Actualmente la velocidad solo se modifica por buoyancy y presión, no por transporte. Es una simplificación consciente para MVP 3 — el motor funciona correctamente sin ella.</p>
+<hr>
+<h2 id="residuo-historico">Residuo histórico</h2>
+<p>El comentario de la función <code>advectar</code> dice:</p>
+<pre><code class="language-cpp">// Transporta temperatura y densidad a través del campo de velocidades.
+</code></pre>
+<p>Esto era correcto antes de que se añadiera <code>reaction</code> como campo advectado. El comentario <strong>no está actualizado</strong> — en realidad transporta los tres campos.</p>
+  </article>
+  <footer class="pie">
+    <a href="index.html">← Índice de la documentación</a> ·
+    <a href="../index.html">Inicio</a>
+    <span style="float:right">Generado desde la bóveda Obsidian del TFG.</span>
+  </footer>
+</div>
+</body>
+</html>
