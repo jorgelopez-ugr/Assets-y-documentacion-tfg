@@ -42,6 +42,9 @@ GROUP_ORDER = [
     "Referencias externas / competencia",
 ]
 
+# Imágenes a excluir por nombre de fichero (boilerplate que no es del proyecto).
+EXCLUDE_BASENAMES = {"logo.png"}  # logo de la plantilla LaTeX, no aporta a la galería
+
 
 def topnav():
     items = [("inicio", "Inicio", "../index.html"),
@@ -86,6 +89,9 @@ def main():
                 dropped += 1
                 continue
             src = img.get("src", "")
+            if os.path.basename(src) in EXCLUDE_BASENAMES:   # boilerplate excluido
+                dropped += 1
+                continue
             new_src = src[len("galeria/"):] if src.startswith("galeria/") else src
             name_el = card.select_one(".card-name")
             name = name_el.get_text().strip() if name_el else os.path.basename(src)
